@@ -4,8 +4,7 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler, CallbackQueryHandler,
-    MessageReactionHandler, MessageUpdateHandler
+    ContextTypes, ConversationHandler, CallbackQueryHandler
 )
 import os
 import psycopg2
@@ -558,6 +557,6 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO | filters.Document.ALL, forward_to_topic))
-    app.add_handler(MessageUpdateHandler(handle_message_edit))
+    app.add_handler(MessageHandler(filters.UPDATE_TYPES.EDITED_MESSAGE, handle_message_edit))
     app.add_handler(MessageHandler(filters.DELETE_CHAT_PHOTO, handle_message_deletion))
     app.run_polling()
