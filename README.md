@@ -1,30 +1,28 @@
-# Telegram Bot
+# Unified Telegram Bot + Admin Panel (Ukrainian)
 
-This is a simple Telegram bot that:
-- Asks users for their name, age, and city
-- Rejects users under 16 with a referral message
-- Sends user info to the admin
-- Allows admin to reply to the user via the bot
+## What This Does
+- Telegram bot that collects name, age, city
+- Saves applicants to PostgreSQL
+- Web admin panel to view and reply
 
-## Running Locally
+## Setup
 
-1. Install requirements:
+1. Create PostgreSQL DB and run `schema.sql`
+2. Set environment variables:
+```bash
+export BOT_TOKEN=your_bot_token
+export ADMIN_ID=your_telegram_id
+export DATABASE_URL=your_postgres_url
+```
+3. Install Python deps:
 ```bash
 pip install -r requirements.txt
 ```
-
-2. Set your environment variable:
+4. Run bot and web panel:
 ```bash
-export BOT_TOKEN=your_token_here
+# Option 1: Run both in separate processes
+python bot.py  # background process
+python app.py  # foreground for admin panel
+
+# Option 2: Use Railway to run one as a web service and one as a worker
 ```
-
-3. Run the bot:
-```bash
-python bot.py
-```
-
-## Deploying on Railway
-
-- Connect this repo
-- Add environment variable `BOT_TOKEN` with your bot token
-- Use `python bot.py` as the start command

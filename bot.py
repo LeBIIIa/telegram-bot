@@ -5,52 +5,71 @@ from telegram.ext import (
     ContextTypes, ConversationHandler
 )
 import os
+import psycopg2
 
 # Stages
 NAME, AGE, CITY = range(3)
 
-# Replace with your actual Telegram user ID
-ADMIN_ID = 376626461
+# Env vars
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+DB_URL = os.getenv("DATABASE_URL")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome! What's your name?")
+    await update.message.reply_text("Привіт! Як тебе звати?")
     return NAME
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['name'] = update.message.text
-    await update.message.reply_text("How old are you?")
+    await update.message.reply_text("Скільки тобі років?")
     return AGE
 
 async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         age = int(update.message.text)
     except ValueError:
-        await update.message.reply_text("Please enter a valid number.")
+        await update.message.reply_text("Будь ласка, введи число.")
         return AGE
 
     context.user_data['age'] = age
 
     if age < 16:
         await update.message.reply_text(
-            "Sorry, you can't join us but we have a referral system where you can earn money by inviting people."
+            "Вибач, але ти не можеш приєднатися. Проте у нас є реферальна система — заробляй, запрошуючи інших!"
         )
         return ConversationHandler.END
 
-    await update.message.reply_text("Great! What city do you live in?")
+    await update.message.reply_text("З якого ти міста?")
     return CITY
 
 async def get_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['city'] = update.message.text
     user_data = context.user_data
+    telegram_id = update.message.from_user.id
 
-    summary = f"""✅ New User Joined:
-Name: {user_data['name']}
-Age: {user_data['age']}
-City: {user_data['city']}
-Telegram ID: {update.message.from_user.id}"""
+    # Save to DB
+    try:
+        conn = psycopg2.connect(DB_URL)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO applicants (name, age, city, telegram_id) VALUES (%s, %s, %s, %s)",
+            (user_data['name'], user_data['age'], user_data['city'], telegram_id)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        await update.message.reply_text("Сталася помилка при збереженні даних.")
+        return ConversationHandler.END
+
+    summary = f"""✅ Новий користувач:
+Ім'я: {user_data['name']}
+Вік: {user_data['age']}
+Місто: {user_data['city']}
+Telegram ID: {telegram_id}"""
 
     await context.bot.send_message(chat_id=ADMIN_ID, text=summary)
-    await update.message.reply_text("Thanks! Your data has been submitted.")
+    await update.message.reply_text("📨 Твоя заявка відправлена. Очікуй відповідь від адміністратора.")
     return ConversationHandler.END
 
 async def admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -60,16 +79,15 @@ async def admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "Telegram ID:" in line:
                 user_id = int(line.split(":")[1].strip())
                 await context.bot.send_message(chat_id=user_id, text=update.message.text)
-                await update.message.reply_text("✅ Reply sent to the user.")
+                await update.message.reply_text("✅ Відповідь надіслано користувачу.")
                 return
-    await update.message.reply_text("❌ No valid user ID found in replied message.")
+    await update.message.reply_text("❌ Не знайдено Telegram ID для відповіді.")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Conversation cancelled.")
+    await update.message.reply_text("Розмову скасовано.")
     return ConversationHandler.END
 
 if __name__ == '__main__':
-    TOKEN = os.getenv("BOT_TOKEN")
     app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
