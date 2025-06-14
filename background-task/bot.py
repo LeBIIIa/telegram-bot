@@ -143,6 +143,10 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineKeyboardButton("💬 Почати чат", callback_data=f"start_chat:{telegram_id}"),
                 InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_user:{telegram_id}")
+            ],
+            [
+                InlineKeyboardButton("✅ Прийняти", callback_data=f"set_status:{telegram_id}:Accepted"),
+                InlineKeyboardButton("❌ Відхилити", callback_data=f"set_status:{telegram_id}:Declined")
             ]
         ])
 
@@ -151,6 +155,22 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Сталася помилка при збереженні даних.")
     return ConversationHandler.END
+
+
+async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    _, tg_id, new_status = query.data.split(":")
+    conn = psycopg2.connect(DB_URL)
+    cur = conn.cursor()
+    cur.execute("UPDATE applicants SET status = %s WHERE telegram_id = %s", (new_status, tg_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    await query.edit_message_reply_markup(None)
+    await query.edit_message_text(f"✅ Статус оновлено: {new_status}")
 
 
 async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,18 +222,15 @@ async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
 
-    # Delete topic if exists
     cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
     topic = cur.fetchone()
     if topic:
-        thread_id = topic[0]
         try:
-            await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=thread_id)
+            await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
         except:
             pass
         cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
 
-    # Delete applicant
     cur.execute("DELETE FROM applicants WHERE telegram_id = %s", (applicant_id,))
     conn.commit()
     cur.close()
@@ -297,7 +314,8 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(start_chat_callback, pattern="^start_chat:"))
     app.add_handler(CallbackQueryHandler(delete_user_callback, pattern="^delete_user:"))
-    app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.TEXT & filters.ALL, handle_admin_group_messages))
+    app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
+    app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO | filters.Document.ALL, forward_to_topic))
 
     app.run_polling()
