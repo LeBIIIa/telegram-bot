@@ -3,14 +3,31 @@ import os
 import psycopg2
 import uuid
 import telegram
+from datetime import datetime, timedelta
 
 datetime_format = "%Y-%m-%d %H:%M:%S"
+TOKEN_TTL_MINUTES = 10
 
 app = Flask(__name__)
 DB_URL = os.getenv("DATABASE_URL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID", "0"))
-TOKEN_TTL_MINUTES = 10
+
+def validate_token(token):
+    conn = psycopg2.connect(DB_URL)
+    cur = conn.cursor()
+    
+    # Clean up expired tokens
+    cur.execute("DELETE FROM admin_tokens WHERE now() - created_at > interval '%s minutes'", (TOKEN_TTL_MINUTES,))
+    
+    # Check if token exists and is valid
+    cur.execute("SELECT 1 FROM admin_tokens WHERE token = %s", (token,))
+    valid = cur.fetchone() is not None
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+    return valid
 
 TEMPLATE = """
 <!doctype html>
@@ -23,6 +40,7 @@ TEMPLATE = """
     .status-Accepted { color: green; }
     .status-Declined { color: red; }
     form.inline { display: inline; }
+    .extra-fields { display: none; }
   </style>
 </head>
 <body>
@@ -42,7 +60,7 @@ TEMPLATE = """
 
 <table border="1" cellpadding="5">
   <tr>
-    <th>Ім’я</th><th>Вік</th><th>Місто</th><th>Телефон</th><th>Username</th>
+    <th>Ім'я</th><th>Вік</th><th>Місто</th><th>Телефон</th><th>Username</th>
     <th>Статус</th><th>Оновити</th><th>Видалити</th>
   </tr>
   {% for user in users %}
@@ -66,10 +84,10 @@ TEMPLATE = """
           <option value="Accepted" {% if user.status == "Accepted" %}selected{% endif %}>Accepted</option>
           <option value="Declined" {% if user.status == "Declined" %}selected{% endif %}>Declined</option>
         </select>
-        <span id="extra-{{ user.telegram_id }}" style="display:none;">
-          <input type="text" name="accepted_city" placeholder="Місто">
-          <input type="date" name="accepted_date">
-        </span>
+        <div id="extra-{{ user.telegram_id }}" class="extra-fields">
+          <input type="text" name="accepted_city" placeholder="Місто" value="{{ user.accepted_city or '' }}">
+          <input type="date" name="accepted_date" value="{{ user.accepted_date or '' }}">
+        </div>
         <button type="submit">💾</button>
       </form>
     </td>
@@ -86,28 +104,12 @@ TEMPLATE = """
 <script>
 function onStatusChange(select, id) {
   const showExtra = select.value === "Accepted";
-  document.getElementById("extra-" + id).style.display = showExtra ? "inline" : "none";
+  document.getElementById("extra-" + id).style.display = showExtra ? "block" : "none";
 }
 </script>
 </body>
 </html>
 """
-
-def validate_token(token):
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS admin_tokens (
-            token TEXT PRIMARY KEY,
-            created_at TIMESTAMP DEFAULT now()
-        )
-    """)
-    cur.execute("DELETE FROM admin_tokens WHERE now() - created_at > interval '%s minutes'", (TOKEN_TTL_MINUTES,))
-    cur.execute("SELECT 1 FROM admin_tokens WHERE token = %s", (token,))
-    valid = cur.fetchone() is not None
-    cur.close()
-    conn.close()
-    return valid
 
 @app.route("/admin")
 def index():
@@ -119,7 +121,11 @@ def index():
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
 
-    query = "SELECT name, age, city, phone, username, telegram_id, status FROM applicants"
+    query = """
+        SELECT name, age, city, phone, username, telegram_id, status, 
+               accepted_city, accepted_date::text
+        FROM applicants
+    """
     params = []
 
     if status_filter:
@@ -130,13 +136,21 @@ def index():
     cur.execute(query, params)
 
     rows = cur.fetchall()
-    users = [dict(name=r[0], age=r[1], city=r[2], phone=r[3], username=r[4], telegram_id=r[5], status=r[6]) for r in rows]
+    users = [dict(
+        name=r[0], age=r[1], city=r[2], phone=r[3], username=r[4],
+        telegram_id=r[5], status=r[6], accepted_city=r[7], accepted_date=r[8]
+    ) for r in rows]
+    
     cur.close()
     conn.close()
     return render_template_string(TEMPLATE, users=users)
 
 @app.route("/update", methods=["POST"])
 def update_status():
+    token = request.args.get("token")
+    if not token or not validate_token(token):
+        return abort(403)
+
     telegram_id = request.form["telegram_id"]
     new_status = request.form["status"]
     accepted_city = request.form.get("accepted_city")
@@ -169,10 +183,14 @@ def update_status():
     cur.close()
     conn.close()
 
-    return redirect("/admin")
+    return redirect(f"/admin?token={token}")
 
 @app.route("/delete", methods=["POST"])
 def delete_user():
+    token = request.args.get("token")
+    if not token or not validate_token(token):
+        return abort(403)
+
     telegram_id = request.form["telegram_id"]
 
     conn = psycopg2.connect(DB_URL)
@@ -193,7 +211,7 @@ def delete_user():
     cur.close()
     conn.close()
 
-    return redirect("/admin")
+    return redirect(f"/admin?token={token}")
 
 @app.route("/generate-token")
 def generate_token():
@@ -204,13 +222,12 @@ def generate_token():
     conn.commit()
     cur.close()
     conn.close()
-    domain = os.getenv("APP_DOMAIN", "https://yourdomain.com")
+    domain = os.getenv("APP_DOMAIN")
     status = request.args.get("status")
     path = f"/admin?token={token}"
     if status:
         path += f"&status={status}"
     return f"🔐 Скопіюй це посилання: {domain}{path} (дійсне {TOKEN_TTL_MINUTES} хвилин)"
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
