@@ -10,7 +10,7 @@ import os
 NAME, AGE, CITY = range(3)
 
 # Replace with your actual Telegram user ID
-ADMIN_ID = 123456789
+ADMIN_ID = 376626461
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Welcome! What's your name?")
