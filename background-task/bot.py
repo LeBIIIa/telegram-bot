@@ -209,7 +209,7 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         text=f"🔗 Почато чат з {chat_title} (ID: {applicant_id})",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("➡️ Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}")]
-        ]
+        ])
     )
 
 
