@@ -184,16 +184,17 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     applicant_id = int(data.split(":")[1])
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
-    cur.execute("SELECT name FROM applicants WHERE telegram_id = %s", (applicant_id,))
+    cur.execute("SELECT name, username FROM applicants WHERE telegram_id = %s", (applicant_id,))
     result = cur.fetchone()
     if not result:
         await query.edit_message_text("❌ Користувача не знайдено.")
         return
 
-    name = result[0]
+    name, username = result
+    chat_title = f"{name} (@{username})" if username else name
     topic = await context.bot.create_forum_topic(
         chat_id=GROUP_ID,
-        name=f"Чат: {name}"
+        name=f"Чат: {chat_title}"
     )
 
     thread_id = topic.message_thread_id
@@ -205,7 +206,10 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await context.bot.send_message(
         chat_id=GROUP_ID,
         message_thread_id=thread_id,
-        text=f"🔗 Почато чат з {name} (ID: {applicant_id})"
+        text=f"🔗 Почато чат з {chat_title} (ID: {applicant_id})",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➡️ Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}")]
+        ]
     )
 
 
