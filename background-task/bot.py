@@ -8,13 +8,16 @@ from telegram.ext import (
 )
 import os
 import psycopg2
+import uuid
+from telegram.constants import ParseMode
 
 NAME, AGE, CITY, PHONE = range(4)
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 GROUP_ID = int(os.getenv("GROUP_ID", "0"))
 DB_URL = os.getenv("DATABASE_URL")
+APP_DOMAIN = os.getenv("APP_DOMAIN", "https://yourdomain.com")
 
+pending_accepts = {}
 
 def ensure_table():
     conn = psycopg2.connect(DB_URL)
@@ -28,7 +31,9 @@ def ensure_table():
             telegram_id BIGINT NOT NULL UNIQUE,
             username TEXT,
             phone TEXT,
-            status TEXT DEFAULT 'New'
+            status TEXT DEFAULT 'New',
+            accepted_city TEXT,
+            accepted_date DATE
         )
     """)
     cur.execute("""
@@ -36,6 +41,12 @@ def ensure_table():
             id SERIAL PRIMARY KEY,
             telegram_id BIGINT NOT NULL,
             thread_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT now()
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_tokens (
+            token TEXT PRIMARY KEY,
             created_at TIMESTAMP DEFAULT now()
         )
     """)
@@ -157,6 +168,39 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def send_admin_panel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID:
+        await update.message.reply_text("⚠️ Ця команда доступна лише у адмін-групі.")
+        return
+
+    token = uuid.uuid4().hex[:8]
+    conn = psycopg2.connect(DB_URL)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO admin_tokens(token) VALUES (%s)", (token,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    base_link = f"{APP_DOMAIN}/admin?token={token}"
+    buttons = [
+        [InlineKeyboardButton("📋 Всі", url=base_link)],
+        [InlineKeyboardButton("🆕 Нові", url=f"{base_link}&status=New")],
+        [InlineKeyboardButton("🔵 В процесі", url=f"{base_link}&status=In%20Progress")],
+        [InlineKeyboardButton("✅ Прийняті", url=f"{base_link}&status=Accepted")],
+        [InlineKeyboardButton("❌ Відхилені", url=f"{base_link}&status=Declined")]
+    ]
+
+    message = await update.message.reply_text(
+        "🔐 Панель адміністратора доступна нижче (посилання дійсне 10 хвилин):",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+    try:
+        await context.bot.pin_chat_message(chat_id=GROUP_ID, message_id=message.message_id)
+    except:
+        pass
+
+
 async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -164,135 +208,65 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     _, tg_id, new_status = query.data.split(":")
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
-    cur.execute("UPDATE applicants SET status = %s WHERE telegram_id = %s", (new_status, tg_id))
-    conn.commit()
-    cur.close()
-    conn.close()
 
-    await query.edit_message_reply_markup(None)
-    await query.edit_message_text(f"✅ Статус оновлено: {new_status}")
+    if new_status == "Accepted":
+        pending_accepts[query.from_user.id] = tg_id
+        await query.edit_message_reply_markup(None)
+        await query.edit_message_text(
+            "✅ Прийнято! Введіть місто та дату у форматі: `Київ:2025-07-01`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        cur.execute("UPDATE applicants SET status = %s WHERE telegram_id = %s", (new_status, tg_id))
+        cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (tg_id,))
+        topic = cur.fetchone()
+        if topic:
+            try:
+                await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
+            except:
+                pass
+            cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (tg_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        await query.edit_message_reply_markup(None)
+        await query.edit_message_text(f"✅ Статус оновлено: {new_status}")
 
 
-async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-    if not data.startswith("start_chat:"):
+async def handle_accept_extra_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = update.effective_user.id
+    if admin_id not in pending_accepts:
         return
 
-    applicant_id = int(data.split(":")[1])
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    cur.execute("SELECT name, username FROM applicants WHERE telegram_id = %s", (applicant_id,))
-    result = cur.fetchone()
-    if not result:
-        await query.edit_message_text("❌ Користувача не знайдено.")
+    telegram_id = pending_accepts.pop(admin_id)
+    try:
+        city, date = update.message.text.strip().split(":")
+    except ValueError:
+        await update.message.reply_text("❌ Невірний формат. Введіть як: `Київ:2025-07-01`", parse_mode=ParseMode.MARKDOWN)
         return
-
-    name, username = result
-    chat_title = f"{name} (@{username})" if username else name
-    topic = await context.bot.create_forum_topic(
-        chat_id=GROUP_ID,
-        name=f"Чат: {chat_title}"
-    )
-
-    thread_id = topic.message_thread_id
-    cur.execute("INSERT INTO topic_mappings (telegram_id, thread_id) VALUES (%s, %s)", (applicant_id, thread_id))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    await context.bot.send_message(
-        chat_id=GROUP_ID,
-        message_thread_id=thread_id,
-        text=f"🔗 Почато чат з {chat_title} (ID: {applicant_id})",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("➡️ Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}")]
-        ])
-    )
-
-
-async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-    if not data.startswith("delete_user:"):
-        return
-
-    applicant_id = int(data.split(":")[1])
 
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
+    cur.execute("""
+        UPDATE applicants
+        SET accepted_city = %s, accepted_date = %s, status = 'Accepted'
+        WHERE telegram_id = %s
+    """, (city.strip(), date.strip(), telegram_id))
 
-    cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
+    cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
     topic = cur.fetchone()
     if topic:
         try:
             await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
         except:
             pass
-        cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
+        cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
 
-    cur.execute("DELETE FROM applicants WHERE telegram_id = %s", (applicant_id,))
     conn.commit()
     cur.close()
     conn.close()
 
-    await query.edit_message_text("🗑️ Заявку видалено.")
-
-
-async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    thread_id = msg.message_thread_id
-    if not thread_id:
-        return
-
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    cur.execute("SELECT telegram_id FROM topic_mappings WHERE thread_id = %s", (thread_id,))
-    result = cur.fetchone()
-    if not result:
-        return
-
-    applicant_id = result[0]
-    cur.execute("UPDATE applicants SET status = %s WHERE telegram_id = %s", ("In Progress", applicant_id))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    if msg.text:
-        await context.bot.send_message(chat_id=applicant_id, text=msg.text)
-    elif msg.voice:
-        await context.bot.send_voice(chat_id=applicant_id, voice=msg.voice.file_id)
-    elif msg.photo:
-        await context.bot.send_photo(chat_id=applicant_id, photo=msg.photo[-1].file_id)
-    elif msg.document:
-        await context.bot.send_document(chat_id=applicant_id, document=msg.document.file_id)
-
-
-async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    telegram_id = update.message.from_user.id
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
-    result = cur.fetchone()
-    cur.close()
-    conn.close()
-    if not result:
-        return
-
-    thread_id = result[0]
-    msg = update.message
-    if msg.text:
-        await context.bot.send_message(chat_id=GROUP_ID, message_thread_id=thread_id, text=f"👤 {msg.text}")
-    elif msg.voice:
-        await context.bot.send_voice(chat_id=GROUP_ID, message_thread_id=thread_id, voice=msg.voice.file_id)
-    elif msg.photo:
-        await context.bot.send_photo(chat_id=GROUP_ID, message_thread_id=thread_id, photo=msg.photo[-1].file_id)
-    elif msg.document:
-        await context.bot.send_document(chat_id=GROUP_ID, message_thread_id=thread_id, document=msg.document.file_id)
+    await update.message.reply_text("✅ Дані збережено та чат закрито.")
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -316,10 +290,7 @@ if __name__ == '__main__':
     )
 
     app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(start_chat_callback, pattern="^start_chat:"))
-    app.add_handler(CallbackQueryHandler(delete_user_callback, pattern="^delete_user:"))
+    app.add_handler(CommandHandler("adminpanel", send_admin_panel_link))
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
-    app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
-    app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO | filters.Document.ALL, forward_to_topic))
-
+    app.add_handler(MessageHandler(filters.TEXT & filters.Chat(GROUP_ID), handle_accept_extra_input))
     app.run_polling()
