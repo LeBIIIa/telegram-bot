@@ -1,81 +1,84 @@
 
+from flask import Flask, request, render_template_string, redirect
 import os
 import psycopg2
-from flask import Flask, request, redirect, url_for, render_template_string
-import requests
 
 app = Flask(__name__)
-
-TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DB_URL = os.getenv("DATABASE_URL")
 
 TEMPLATE = """
 <!doctype html>
-<title>Admin Panel</title>
+<html>
+<head>
+  <title>Admin Panel</title>
+  <style>
+    .status-New { color: gray; }
+    .status-InProgress { color: blue; }
+    .status-Accepted { color: green; }
+    .status-Declined { color: red; }
+  </style>
+</head>
+<body>
 <h2>Надіслані заявки</h2>
-{% if users %}
 <table border="1" cellpadding="5">
-    <tr><th>Ім’я</th><th>Вік</th><th>Місто</th><th>Дія</th></tr>
-    {% for user in users %}
-    <tr>
-        <td>{{ user.name }}</td>
-        <td>{{ user.age }}</td>
-        <td>{{ user.city }}</td>
-        <td>
-            <form action="/reply" method="post" style="display:inline;">
-                <input type="hidden" name="chat_id" value="{{ user.telegram_id }}">
-                <input type="text" name="message" placeholder="Ваша відповідь" required>
-                <button type="submit">Відправити</button>
-            </form>
-        </td>
-    </tr>
-    {% endfor %}
+  <tr><th>Ім’я</th><th>Вік</th><th>Місто</th><th>Телефон</th><th>Username</th><th>Статус</th><th>Оновити</th></tr>
+  {% for user in users %}
+  <tr>
+    <td>{{ user.name }}</td>
+    <td>{{ user.age }}</td>
+    <td>{{ user.city }}</td>
+    <td>{{ user.phone or "—" }}</td>
+    <td>
+      {% if user.username %}
+        <a href="https://t.me/{{ user.username }}" target="_blank">@{{ user.username }}</a>
+      {% else %}
+        —
+      {% endif %}
+    </td>
+    <td class="status-{{ user.status.replace(' ', '') }}">{{ user.status }}</td>
+    <td>
+      <form method="post" action="/update">
+        <input type="hidden" name="telegram_id" value="{{ user.telegram_id }}">
+        <select name="status">
+          <option value="New" {% if user.status == "New" %}selected{% endif %}>New</option>
+          <option value="In Progress" {% if user.status == "In Progress" %}selected{% endif %}>In Progress</option>
+          <option value="Accepted" {% if user.status == "Accepted" %}selected{% endif %}>Accepted</option>
+          <option value="Declined" {% if user.status == "Declined" %}selected{% endif %}>Declined</option>
+        </select>
+        <button type="submit">💾</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
 </table>
-{% else %}
-<p>Заявок ще немає.</p>
-{% endif %}
+</body>
+</html>
 """
 
-def ensure_table():
+@app.route("/", methods=["GET"])
+def index():
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS applicants (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    age INTEGER NOT NULL,
-    city TEXT NOT NULL,
-    telegram_id BIGINT NOT NULL
-);
-""")
+    cur.execute("SELECT name, age, city, phone, username, telegram_id, status FROM applicants ORDER BY id DESC")
+    rows = cur.fetchall()
+    users = [
+        dict(name=r[0], age=r[1], city=r[2], phone=r[3], username=r[4], telegram_id=r[5], status=r[6])
+        for r in rows
+    ]
+    cur.close()
+    conn.close()
+    return render_template_string(TEMPLATE, users=users)
+
+@app.route("/update", methods=["POST"])
+def update_status():
+    telegram_id = request.form["telegram_id"]
+    new_status = request.form["status"]
+
+    conn = psycopg2.connect(DB_URL)
+    cur = conn.cursor()
+    cur.execute("UPDATE applicants SET status = %s WHERE telegram_id = %s", (new_status, telegram_id))
     conn.commit()
     cur.close()
     conn.close()
 
-@app.route("/")
-def index():
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    cur.execute("SELECT name, age, city, telegram_id FROM applicants ORDER BY id DESC")
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    users = [{"name": r[0], "age": r[1], "city": r[2], "telegram_id": r[3]} for r in rows]
-    return render_template_string(TEMPLATE, users=users)
-
-@app.route("/reply", methods=["POST"])
-def reply():
-    chat_id = request.form["chat_id"]
-    message = request.form["message"]
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message}
-    requests.post(url, data=payload)
-
-    return redirect(url_for("index"))
-
-if __name__ == "__main__":
-    ensure_table()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    return redirect("/")
