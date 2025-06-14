@@ -297,7 +297,7 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(start_chat_callback, pattern="^start_chat:"))
     app.add_handler(CallbackQueryHandler(delete_user_callback, pattern="^delete_user:"))
-    app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.TEXT & filters.Thread, handle_admin_group_messages))
+    app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.TEXT & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO | filters.Document.ALL, forward_to_topic))
 
     app.run_polling()
