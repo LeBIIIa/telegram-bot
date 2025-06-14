@@ -14,7 +14,6 @@ TEMPLATE = """
 <!doctype html>
 <title>Admin Panel</title>
 <h2>Надіслані заявки</h2>
-{% raw %}
 {% if users %}
 <table border="1" cellpadding="5">
     <tr><th>Ім’я</th><th>Вік</th><th>Місто</th><th>Дія</th></tr>
@@ -36,7 +35,6 @@ TEMPLATE = """
 {% else %}
 <p>Заявок ще немає.</p>
 {% endif %}
-{% endraw %}
 """
 
 def ensure_table():
