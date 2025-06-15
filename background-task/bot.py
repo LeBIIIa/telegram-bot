@@ -4,9 +4,8 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler, CallbackQueryHandler,
+    ContextTypes, ConversationHandler, CallbackQueryHandler, BaseHandler
 )
-from telegram.ext._handlers import Handler
 import os
 import psycopg2
 import uuid
@@ -528,12 +527,12 @@ async def list_applicants(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(message)
 
-class EditedMessageHandler(Handler):
+class EditedMessageHandler(BaseHandler):
     def check_update(self, update):
         return update.edited_message is not None
 
     async def handle_update(self, update, context):
-        return await handle_message_edit(update, context)
+        return await self.callback(update, context)
 
 if __name__ == '__main__':
     ensure_table()
@@ -558,5 +557,5 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
-    app.add_handler(EditedMessageHandler())
+    app.add_handler(EditedMessageHandler(callback=handle_message_edit))
     app.run_polling()
