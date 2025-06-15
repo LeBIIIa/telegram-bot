@@ -313,9 +313,10 @@ async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    thread_id = msg.message_thread_id
-    if not thread_id:
+    if not if not msg or not msg.message_thread_id:
         return
+        
+    thread_id = msg.message_thread_id
 
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
@@ -362,8 +363,7 @@ async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Forward any type of message
         sent_message = await msg.copy(
             chat_id=GROUP_ID,
-            message_thread_id=thread_id,
-            from_chat_id=telegram_id
+            message_thread_id=thread_id
         )
         
         if sent_message:
