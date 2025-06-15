@@ -3,7 +3,7 @@ from telegram import (
     InlineKeyboardMarkup, InlineKeyboardButton
 )
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, UpdateHandler, filters,
+    ApplicationBuilder, CommandHandler, MessageHandler, CallBackHandler, filters,
     ContextTypes, ConversationHandler, CallbackQueryHandler
 )
 import os
@@ -541,5 +541,5 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
-    app.add_handler(UpdateHandler(handle_message_edit))
+    app.add_handler(CallBackHandler(handle_message_edit), block=False, check_update=lambda u: u.edited_message is not None)
     app.run_polling()
