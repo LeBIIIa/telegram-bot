@@ -313,7 +313,7 @@ async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if not if not msg or not msg.message_thread_id:
+    if not msg or not msg.message_thread_id:
         return
         
     thread_id = msg.message_thread_id
