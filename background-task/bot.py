@@ -329,22 +329,18 @@ async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFA
     conn.commit()
 
     sent_message = None
-    if msg.text:
-        sent_message = await context.bot.send_message(chat_id=applicant_id, text=msg.text)
-    elif msg.voice:
-        sent_message = await context.bot.send_voice(chat_id=applicant_id, voice=msg.voice.file_id)
-    elif msg.photo:
-        sent_message = await context.bot.send_photo(chat_id=applicant_id, photo=msg.photo[-1].file_id)
-    elif msg.document:
-        sent_message = await context.bot.send_document(chat_id=applicant_id, document=msg.document.file_id)
-
-    if sent_message:
-        cur.execute("""
-            INSERT INTO message_log (admin_message_id, user_message_id, telegram_id, thread_id, message_type)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (msg.message_id, sent_message.message_id, applicant_id, thread_id, 
-              'text' if msg.text else 'voice' if msg.voice else 'photo' if msg.photo else 'document'))
-        conn.commit()
+    try:
+        # Forward any type of message
+        sent_message = await msg.copy(chat_id=applicant_id)
+        
+        if sent_message:
+            cur.execute("""
+                INSERT INTO message_log (admin_message_id, user_message_id, telegram_id, thread_id, message_type)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (msg.message_id, sent_message.message_id, applicant_id, thread_id, 'message'))
+            conn.commit()
+    except Exception as e:
+        print(f"Error forwarding message: {e}")
 
     cur.close()
     conn.close()
@@ -362,22 +358,22 @@ async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     sent_message = None
 
-    if msg.text:
-        sent_message = await context.bot.send_message(chat_id=GROUP_ID, message_thread_id=thread_id, text=f"👤 {msg.text}")
-    elif msg.voice:
-        sent_message = await context.bot.send_voice(chat_id=GROUP_ID, message_thread_id=thread_id, voice=msg.voice.file_id)
-    elif msg.photo:
-        sent_message = await context.bot.send_photo(chat_id=GROUP_ID, message_thread_id=thread_id, photo=msg.photo[-1].file_id)
-    elif msg.document:
-        sent_message = await context.bot.send_document(chat_id=GROUP_ID, message_thread_id=thread_id, document=msg.document.file_id)
-
-    if sent_message:
-        cur.execute("""
-            INSERT INTO message_log (admin_message_id, user_message_id, telegram_id, thread_id, message_type)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (sent_message.message_id, msg.message_id, telegram_id, thread_id,
-              'text' if msg.text else 'voice' if msg.voice else 'photo' if msg.photo else 'document'))
-        conn.commit()
+    try:
+        # Forward any type of message
+        sent_message = await msg.copy(
+            chat_id=GROUP_ID,
+            message_thread_id=thread_id,
+            from_chat_id=telegram_id
+        )
+        
+        if sent_message:
+            cur.execute("""
+                INSERT INTO message_log (admin_message_id, user_message_id, telegram_id, thread_id, message_type)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (sent_message.message_id, msg.message_id, telegram_id, thread_id, 'message'))
+            conn.commit()
+    except Exception as e:
+        print(f"Error forwarding message: {e}")
 
     cur.close()
     conn.close()
@@ -556,7 +552,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("list", list_applicants))
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
-    app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO | filters.Document.ALL, forward_to_topic))
-    app.add_handler(MessageHandler(filters.EDITED, handle_message_edit))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
+    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, handle_message_edit))
     app.add_handler(MessageHandler(filters.DELETE_CHAT_PHOTO, handle_message_deletion))
     app.run_polling()
