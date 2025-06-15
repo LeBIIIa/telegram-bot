@@ -347,6 +347,9 @@ async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFA
     conn.close()
 
 async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return  # Not a message update, skip
+        
     telegram_id = update.message.from_user.id
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
