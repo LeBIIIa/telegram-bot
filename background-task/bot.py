@@ -541,5 +541,5 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
-    app.add_handler(MessageHandler(filters.ALL, handle_message_edit), block=False)
+    app.add_handler(MessageHandler(filters.ALL, handle_message_edit, block=False))
     app.run_polling()
