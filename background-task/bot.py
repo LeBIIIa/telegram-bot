@@ -4,7 +4,8 @@ from telegram import (
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler, CallbackQueryHandler
+    ContextTypes, ConversationHandler, CallbackQueryHandler,
+    Handler
 )
 import os
 import psycopg2
