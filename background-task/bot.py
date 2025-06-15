@@ -3,7 +3,7 @@ from telegram import (
     InlineKeyboardMarkup, InlineKeyboardButton
 )
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, filters,
+    ApplicationBuilder, CommandHandler, MessageHandler, UpdateHandler, filters,
     ContextTypes, ConversationHandler, CallbackQueryHandler
 )
 import os
@@ -378,84 +378,72 @@ async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.close()
     conn.close()
 
-async def handle_message_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.delete_chat_photo:
-        return
-
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    
-    # Get the message from log
-    cur.execute("""
-        SELECT admin_message_id, user_message_id, telegram_id, message_type
-        FROM message_log
-        WHERE admin_message_id = %s OR user_message_id = %s
-    """, (update.message.message_id, update.message.message_id))
-    
-    result = cur.fetchone()
-    if not result:
-        return
-
-    admin_msg_id, user_msg_id, telegram_id, msg_type = result
-
-    try:
-        # Delete the corresponding message
-        if update.message.message_id == admin_msg_id:
-            await context.bot.delete_message(chat_id=telegram_id, message_id=user_msg_id)
-        else:
-            await context.bot.delete_message(chat_id=GROUP_ID, message_id=admin_msg_id)
-        
-        # Remove from log
-        cur.execute("DELETE FROM message_log WHERE admin_message_id = %s OR user_message_id = %s", 
-                   (admin_msg_id, user_msg_id))
-        conn.commit()
-    except Exception as e:
-        print(f"Error deleting message: {e}")
-
-    cur.close()
-    conn.close()
-
 async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.edited_message:
+    edited = update.edited_message
+    if not edited:
         return
+
+    message_id = edited.message_id
+    new_text = edited.text or edited.caption or ""
+    thread_id = edited.message_thread_id  # Optional; only for admin messages in threads
 
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
-    
-    # Get the message from log
+
+    # Lookup the message mapping
     cur.execute("""
-        SELECT admin_message_id, user_message_id, telegram_id, message_type
+        SELECT admin_message_id, user_message_id, telegram_id
         FROM message_log
         WHERE admin_message_id = %s OR user_message_id = %s
-    """, (update.edited_message.message_id, update.edited_message.message_id))
-    
+    """, (message_id, message_id))
+
     result = cur.fetchone()
-    if not result:
-        return
-
-    admin_msg_id, user_msg_id, telegram_id, msg_type = result
-
-    try:
-        # Update the corresponding message
-        if update.edited_message.message_id == admin_msg_id:
-            # Admin edited their message, update user's message
-            await context.bot.edit_message_text(
-                chat_id=telegram_id,
-                message_id=user_msg_id,
-                text=update.edited_message.text.replace("👤 ", "")
-            )
-        else:
-            # User edited their message, update admin's message
-            await context.bot.edit_message_text(
-                chat_id=GROUP_ID,
-                message_id=admin_msg_id,
-                text=f"👤 {update.edited_message.text}"
-            )
-    except Exception as e:
-        print(f"Error editing message: {e}")
-
     cur.close()
     conn.close()
+
+    if not result:
+        return  # No log match
+
+    admin_msg_id, user_msg_id, telegram_id = result
+
+    try:
+        if message_id == admin_msg_id:
+            # Admin edited — update user
+            if edited.text:
+                # Text message
+                await context.bot.edit_message_text(
+                    chat_id=telegram_id,
+                    message_id=user_msg_id,
+                    text=edited.text
+                )
+            elif edited.caption:
+                # Media with caption
+                await context.bot.edit_message_caption(
+                    chat_id=telegram_id,
+                    message_id=user_msg_id,
+                    caption=edited.caption
+                )
+
+        elif message_id == user_msg_id:
+            # User edited — update admin
+            prefix = "👤 "
+            if edited.text:
+                await context.bot.edit_message_text(
+                    chat_id=GROUP_ID,
+                    message_id=admin_msg_id,
+                    message_thread_id=thread_id,
+                    text=f"{prefix}{edited.text}"
+                )
+            elif edited.caption:
+                await context.bot.edit_message_caption(
+                    chat_id=GROUP_ID,
+                    message_id=admin_msg_id,
+                    message_thread_id=thread_id,
+                    caption=f"{prefix}{edited.caption}"
+                )
+
+    except Exception as e:
+        print(f"Edit sync failed: {e}")
 
 async def handle_accept_extra_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_id = update.effective_user.id
@@ -553,6 +541,5 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
-    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, handle_message_edit))
-    app.add_handler(MessageHandler(filters.DELETE_CHAT_PHOTO, handle_message_deletion))
+    app.add_handler(UpdateHandler(handle_message_edit))
     app.run_polling()
