@@ -349,7 +349,7 @@ async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFA
 async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return  # Not a message update, skip
-        
+
     telegram_id = update.message.from_user.id
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
@@ -382,13 +382,17 @@ async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
 async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    edited = update.edited_message
-    if not edited:
+    if not update.edited_message:
         return
 
+    edited = update.edited_message
     message_id = edited.message_id
     new_text = edited.text or edited.caption or ""
     thread_id = edited.message_thread_id  # Optional; only for admin messages in threads
+
+    print("✅ handle_message_edit triggered")
+    print("🔍 Edited message ID:", message_id)
+
 
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
