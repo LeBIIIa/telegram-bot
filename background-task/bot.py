@@ -527,6 +527,13 @@ async def list_applicants(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(message)
 
+class EditedMessageHandler(Handler):
+    def check_update(self, update):
+        return update.edited_message is not None
+
+    async def handle_update(self, update, context):
+        return await handle_message_edit(update, context)
+
 if __name__ == '__main__':
     ensure_table()
     app = ApplicationBuilder().token(TOKEN).build()
@@ -550,5 +557,5 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
-    app.add_handler(MessageHandler(filters.ALL, handle_message_edit, block=False))
+    app.add_handler(EditedMessageHandler())
     app.run_polling()
