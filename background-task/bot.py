@@ -382,6 +382,8 @@ async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
 async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print ('handle_message_edit triggered, ', update)
+    
     if not update.edited_message:
         return
 
