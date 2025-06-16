@@ -313,27 +313,17 @@ async def send_admin_panel_link(update: Update, context: ContextTypes.DEFAULT_TY
             logger.error(f"❌ Error checking group membership: {str(e)}")
             return
 
-        token = uuid.uuid4().hex[:8]
-        logger.info(f"🔑 Generated new admin token: {token}")
-        
-        conn = psycopg2.connect(DB_URL)
-        cur = conn.cursor()
-        cur.execute("INSERT INTO admin_tokens(token, telegram_id) VALUES (%s, %s)", (token, update.effective_chat.id))
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        base_link = f"{APP_DOMAIN}/admin?token={token}"
+        # Create buttons with callback data instead of direct URLs
         buttons = [
-            [InlineKeyboardButton("📋 Всі", url=base_link)],
-            [InlineKeyboardButton("🆕 Нові", url=f"{base_link}&status=New")],
-            [InlineKeyboardButton("🔵 В процесі", url=f"{base_link}&status=In%20Progress")],
-            [InlineKeyboardButton("✅ Прийняті", url=f"{base_link}&status=Accepted")],
-            [InlineKeyboardButton("❌ Відхилені", url=f"{base_link}&status=Declined")]
+            [InlineKeyboardButton("📋 Всі", callback_data="admin_panel:all")],
+            [InlineKeyboardButton("🆕 Нові", callback_data="admin_panel:New")],
+            [InlineKeyboardButton("🔵 В процесі", callback_data="admin_panel:In Progress")],
+            [InlineKeyboardButton("✅ Прийняті", callback_data="admin_panel:Accepted")],
+            [InlineKeyboardButton("❌ Відхилені", callback_data="admin_panel:Declined")]
         ]
 
         message = await update.message.reply_text(
-            "🔐 Панель адміністратора доступна нижче (посилання дійсне 10 хвилин):",
+            "🔐 Виберіть категорію для перегляду в панелі адміністратора:",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
@@ -344,16 +334,85 @@ async def send_admin_panel_link(update: Update, context: ContextTypes.DEFAULT_TY
             logger.error(f"❌ Failed to pin admin panel message: {str(e)}")
     except Exception as e:
         logger.error(f"❌ Error in send_admin_panel_link: {str(e)}")
-        await update.message.reply_text("❌ Сталася помилка при створенні посилання.")
+        await update.message.reply_text("❌ Сталася помилка при створенні панелі адміністратора.")
+
+async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try:
+        # Check if the user is a member of the admin group
+        try:
+            chat_member = await context.bot.get_chat_member(
+                chat_id=GROUP_ID,
+                user_id=query.from_user.id
+            )
+            if chat_member.status not in ['member', 'administrator', 'creator']:
+                logger.warning(f"⚠️ Non-member tried to access admin panel: user_id={query.from_user.id}")
+                await query.answer("❌ Ви не є учасником адмін групи", show_alert=True)
+                return
+        except Exception as e:
+            logger.error(f"❌ Error checking group membership: {str(e)}")
+            await query.answer("❌ Помилка перевірки членства в групі", show_alert=True)
+            return
+
+        # Generate token on demand
+        token = uuid.uuid4().hex[:8]
+        logger.info(f"🔑 Generated new admin token on demand: {token}")
+        
+        conn = psycopg2.connect(DB_URL)
+        cur = conn.cursor()
+        cur.execute("INSERT INTO admin_tokens(token, telegram_id) VALUES (%s, %s)", (token, query.from_user.id))
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        # Parse the callback data
+        _, panel_type = query.data.split(":")
+        
+        # Create the appropriate URL based on panel type
+        base_link = f"{APP_DOMAIN}/admin?token={token}"
+        if panel_type != "all":
+            url = f"{base_link}&status={panel_type.replace(' ', '%20')}"
+        else:
+            url = base_link
+            
+        # Answer the callback query with a notification
+        await query.answer("🔑 Створено новий токен доступу", show_alert=True)
+        
+        # Send the link as a private message to the user
+        try:
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=f"🔐 Ваше посилання на панель адміністратора (дійсне 10 хвилин):\n{url}",
+                disable_web_page_preview=True
+            )
+            # Also update the original message to confirm
+            await query.edit_message_text(
+                "🔐 Посилання відправлено вам в приватні повідомлення.\n"
+                "Перевірте ваші особисті повідомлення з ботом.",
+                reply_markup=query.message.reply_markup
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to send private message: {str(e)}")
+            # If we can't send a private message, show the link in the group
+            await query.edit_message_text(
+                f"🔐 Ваше посилання на панель адміністратора (дійсне 10 хвилин):\n{url}\n\n"
+                f"⚠️ Не вдалося відправити посилання в приватні повідомлення. "
+                f"Будь ласка, почніть приватний чат з ботом.",
+                disable_web_page_preview=True
+            )
+            
+    except Exception as e:
+        logger.error(f"❌ Error in admin_panel_callback: {str(e)}")
+        await query.answer("❌ Сталася помилка при створенні посилання", show_alert=True)
 
 async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
         # Check if the user is admin
-        if query.from_user.id != ADMIN_ID:
-            logger.warning(f"⚠️ Non-admin user {query.from_user.id} tried to change status")
-            await query.answer("❌ Тільки адміністратор може змінювати статус.", show_alert=True)
-            return
+        #if query.from_user.id != ADMIN_ID:
+        #    logger.warning(f"⚠️ Non-admin user {query.from_user.id} tried to change status")
+        #    await query.answer("❌ Тільки адміністратор може змінювати статус.", show_alert=True)
+        #    return
 
         _, tg_id, new_status = query.data.split(":")
         logger.info(f"🔄 Setting status for user {tg_id} to {new_status}")
@@ -1411,6 +1470,7 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(start_chat_callback, pattern="^start_chat:"))
     app.add_handler(CallbackQueryHandler(delete_user_callback, pattern="^delete_user:"))
     app.add_handler(CallbackQueryHandler(handle_navigation_callback, pattern="^nav:"))
+    app.add_handler(CallbackQueryHandler(admin_panel_callback, pattern="^admin_panel:"))
     app.add_handler(CommandHandler("admin_panel", send_admin_panel_link))
     app.add_handler(CommandHandler("applicants_by_status", applicants_by_status))
     app.add_handler(CommandHandler("create_applicants_topic", create_applicants_topic))
