@@ -772,7 +772,7 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         # Look up the message mapping
         cur.execute("""
-            SELECT admin_message_id, user_message_id, telegram_id
+            SELECT admin_message_id, user_message_id, telegram_id, thread_id
             FROM message_log
             WHERE admin_message_id = %s OR user_message_id = %s
         """, (message_id, message_id))
@@ -785,8 +785,8 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.warning("❌ No message mapping found in database")
             return
 
-        admin_msg_id, user_msg_id, telegram_id = result
-        logger.info(f"✅ Found message mapping - admin_msg: {admin_msg_id}, user_msg: {user_msg_id}, user_id: {telegram_id}")
+        admin_msg_id, user_msg_id, telegram_id, stored_thread_id = result
+        logger.info(f"✅ Found message mapping - admin_msg: {admin_msg_id}, user_msg: {user_msg_id}, user_id: {telegram_id}, thread_id: {stored_thread_id}")
 
         try:
             if message_id == admin_msg_id:
@@ -797,10 +797,7 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await context.bot.edit_message_text(
                         chat_id=telegram_id,
                         message_id=user_msg_id,
-                        text=edited.text,
-                        reply_markup=InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_msg:{user_msg_id}:{telegram_id}")
-                        ]])
+                        text=edited.text
                     )
                     logger.info("✅ Updated user's text message")
                 elif edited.caption:
@@ -808,10 +805,7 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await context.bot.edit_message_caption(
                         chat_id=telegram_id,
                         message_id=user_msg_id,
-                        caption=edited.caption,
-                        reply_markup=InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_msg:{user_msg_id}:{telegram_id}")
-                        ]])
+                        caption=edited.caption
                     )
                     logger.info("✅ Updated user's message caption")
 
@@ -820,25 +814,22 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                 # User edited — update admin
                 prefix = "👤 "
                 if edited.text:
+                    # For forum topics, we need to use the full chat_id format and thread_id
+                    chat_id = f"-100{str(GROUP_ID)[4:]}"
                     await context.bot.edit_message_text(
-                        chat_id=GROUP_ID,
+                        chat_id=chat_id,
                         message_id=admin_msg_id,
-                        message_thread_id=thread_id,
                         text=f"{prefix}{edited.text}",
-                        reply_markup=InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_msg:{admin_msg_id}:{telegram_id}")
-                        ]])
+                        message_thread_id=stored_thread_id
                     )
                     logger.info("✅ Updated admin's text message")
                 elif edited.caption:
+                    chat_id = f"-100{str(GROUP_ID)[4:]}"
                     await context.bot.edit_message_caption(
-                        chat_id=GROUP_ID,
+                        chat_id=chat_id,
                         message_id=admin_msg_id,
-                        message_thread_id=thread_id,
                         caption=f"{prefix}{edited.caption}",
-                        reply_markup=InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_msg:{admin_msg_id}:{telegram_id}")
-                        ]])
+                        message_thread_id=stored_thread_id
                     )
                     logger.info("✅ Updated admin's message caption")
 
@@ -927,20 +918,26 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
         logger.error(f"❌ Error in handle_message_reaction: {str(e)}")
 
 async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Get the message object, either from regular message or forum topic
+    message = update.message or update.edited_message
     try:
+        if not message:
+            logger.warning("❌ No message found in update")
+            return
+
         # Check if the message is from the admin group
-        if update.effective_chat.id != GROUP_ID:
-            logger.warning(f"⚠️ Command used outside admin group: chat_id={update.effective_chat.id}")
+        if message.chat.id != GROUP_ID:
+            logger.warning(f"⚠️ Command used outside admin group: chat_id={message.chat.id}")
             return
 
         # Check if the user is a member of the admin group
         try:
             chat_member = await context.bot.get_chat_member(
                 chat_id=GROUP_ID,
-                user_id=update.effective_user.id
+                user_id=message.from_user.id
             )
             if chat_member.status not in ['member', 'administrator', 'creator']:
-                logger.warning(f"⚠️ Non-member tried to use command: user_id={update.effective_user.id}")
+                logger.warning(f"⚠️ Non-member tried to use command: user_id={message.from_user.id}")
                 return
         except Exception as e:
             logger.error(f"❌ Error checking group membership: {str(e)}")
@@ -949,7 +946,7 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
         # Parse command arguments
         args = context.args
         if not args:
-            await update.message.reply_text(
+            await message.reply_text(
                 "❌ Будь ласка, вкажіть статус.\n"
                 "Доступні статуси: New, In Progress, Accepted, Declined\n"
                 "Приклад: /applicants_by_status New"
@@ -961,7 +958,7 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
         per_page = 20
 
         if status not in ['New', 'In Progress', 'Accepted', 'Declined']:
-            await update.message.reply_text(
+            await message.reply_text(
                 "❌ Невірний статус.\n"
                 "Доступні статуси: New, In Progress, Accepted, Declined"
             )
@@ -977,7 +974,7 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
         total_count = cur.fetchone()[0]
 
         if total_count == 0:
-            await update.message.reply_text(f"📭 Немає заявок зі статусом {status}")
+            await message.reply_text(f"📭 Немає заявок зі статусом {status}")
             cur.close()
             conn.close()
             return
@@ -1016,20 +1013,71 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
             if status == "Accepted" and accepted_city and accepted_date:
                 table += f"   └─ Прийнято: {accepted_city}, {accepted_date}\n"
 
-        # Add pagination controls
-        table += "\n"
-        if total_pages > 1:
-            table += "📄 Навігація:\n"
-            if page > 1:
-                table += f"◀️ /applicants_by_status {status} {page-1}\n"
-            if page < total_pages:
-                table += f"▶️ /applicants_by_status {status} {page+1}\n"
+        # Create navigation buttons
+        keyboard = []
+        nav_row = []
+        
+        if page > 1:
+            nav_row.append(InlineKeyboardButton("◀️", callback_data=f"nav:{status}:{page-1}"))
+        nav_row.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="ignore"))
+        if page < total_pages:
+            nav_row.append(InlineKeyboardButton("▶️", callback_data=f"nav:{status}:{page+1}"))
+        
+        if nav_row:
+            keyboard.append(nav_row)
 
-        await update.message.reply_text(table)
+        # Add status filter buttons
+        status_row = []
+        for s in ['New', 'In Progress', 'Accepted', 'Declined']:
+            status_row.append(InlineKeyboardButton(
+                "✅" if s == status else s,
+                callback_data=f"nav:{s}:1"
+            ))
+        keyboard.append(status_row)
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # If this is a callback query, edit the message
+        if update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(
+                text=table,
+                reply_markup=reply_markup
+            )
+        else:
+            # If this is a new command, send a new message
+            await message.reply_text(
+                text=table,
+                reply_markup=reply_markup
+            )
+
         logger.info(f"✅ Listed {len(rows)} applicants with status {status} on page {page}")
+    except Exception as err:
+        logger.error(f"❌ Error in applicants_by_status: {str(err)}")
+        if message:
+            await message.reply_text("❌ Сталася помилка при отриманні списку заявок.")
+
+async def handle_navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try:
+        if not query or not query.data.startswith("nav:"):
+            return
+
+        # Ignore the "current page" button
+        if query.data == "ignore":
+            await query.answer()
+            return
+
+        # Parse the navigation data
+        _, status, page = query.data.split(":")
+        page = int(page)
+
+        # Call applicants_by_status with the new parameters
+        context.args = [status, str(page)]
+        await applicants_by_status(update, context)
     except Exception as e:
-        logger.error(f"❌ Error in applicants_by_status: {str(e)}")
-        await update.message.reply_text("❌ Сталася помилка при отриманні списку заявок.")
+        logger.error(f"❌ Error in handle_navigation_callback: {str(e)}")
+        await query.answer("❌ Сталася помилка при навігації", show_alert=True)
 
 async def create_applicants_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1195,6 +1243,7 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(start_chat_callback, pattern="^start_chat:"))
     app.add_handler(CallbackQueryHandler(delete_user_callback, pattern="^delete_user:"))
     app.add_handler(CallbackQueryHandler(delete_message_callback, pattern="^delete_msg:"))
+    app.add_handler(CallbackQueryHandler(handle_navigation_callback, pattern="^nav:"))
     app.add_handler(CommandHandler("admin_panel", send_admin_panel_link))
     app.add_handler(CommandHandler("applicants_by_status", applicants_by_status))
     app.add_handler(CommandHandler("create_applicants_topic", create_applicants_topic))
