@@ -568,12 +568,6 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def accept_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Check if the user is admin
-        if update.effective_user.id != ADMIN_ID:
-            logger.warning(f"⚠️ Non-admin user {update.effective_user.id} tried to use accept command")
-            await update.message.reply_text("❌ Тільки адміністратор може використовувати цю команду.")
-            return
-
         # Check if there are enough arguments
         if len(context.args) < 2:
             await update.message.reply_text(
