@@ -78,7 +78,7 @@ TEMPLATE = """
 <table border="1" cellpadding="5">
   <tr>
     <th>Ім'я</th><th>Вік</th><th>Місто</th><th>Телефон</th><th>Username</th>
-    <th>Статус</th><th>Оновити</th>{% if is_admin %}<th>Видалити</th>{% endif %}
+    <th>Статус</th><th>Прийнято: Місто</th><th>Прийнято: Дата</th><th>Оновити</th>{% if is_admin %}<th>Видалити</th>{% endif %}
   </tr>
   {% for user in users %}
   <tr>
@@ -92,6 +92,8 @@ TEMPLATE = """
       {% else %} — {% endif %}
     </td>
     <td class="status-{{ user.status.replace(' ', '') }}">{{ user.status }}</td>
+    <td>{{ user.accepted_city or "—" }}</td>
+    <td>{{ user.accepted_date or "—" }}</td>
     <td>
       <form method="post" action="/update" class="inline">
         <input type="hidden" name="telegram_id" value="{{ user.telegram_id }}">
@@ -127,6 +129,17 @@ function onStatusChange(select, id) {
   const showExtra = select.value === "Accepted";
   document.getElementById("extra-" + id).style.display = showExtra ? "block" : "none";
 }
+
+// Show extra fields for accepted applications on page load
+document.addEventListener('DOMContentLoaded', function() {
+  const selects = document.querySelectorAll('select[name="status"]');
+  selects.forEach(function(select) {
+    if (select.value === "Accepted") {
+      const id = select.closest('form').querySelector('input[name="telegram_id"]').value;
+      document.getElementById("extra-" + id).style.display = "block";
+    }
+  });
+});
 </script>
 </body>
 </html>
