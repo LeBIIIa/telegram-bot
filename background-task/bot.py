@@ -349,8 +349,6 @@ async def send_admin_panel_link(update: Update, context: ContextTypes.DEFAULT_TY
 async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
-        await query.answer()
-
         # Check if the user is admin
         if query.from_user.id != ADMIN_ID:
             logger.warning(f"⚠️ Non-admin user {query.from_user.id} tried to change status")
@@ -406,6 +404,8 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"`/accept {tg_id} Київ:2025-07-01`",
                     parse_mode=ParseMode.MARKDOWN
                 )
+            # Answer the query with a visible popup
+            await query.answer("✅ Статус змінено на 'Прийнято'", show_alert=True)
             logger.info(f"⏳ Waiting for accept command for user {tg_id}")
         else:
             try:
@@ -449,6 +449,9 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await query.edit_message_text(user_summary)
                 else:
                     await query.edit_message_text(f"✅ Статус оновлено: {new_status}")
+                
+                # Answer the query with a visible popup
+                await query.answer(f"✅ Статус змінено на '{new_status}'", show_alert=True)
                 logger.info(f"✅ Status updated for user {tg_id} to {new_status}")
             except Exception as e:
                 logger.error(f"❌ Error updating status: {str(e)}")
@@ -569,8 +572,6 @@ async def accept_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
-        await query.answer()
-
         data = query.data
         if not data.startswith("start_chat:"):
             return
@@ -605,6 +606,7 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_reply_markup(
                 reply_markup=keyboard
             )
+            await query.answer("ℹ️ Чат вже існує", show_alert=True)
             cur.close()
             conn.close()
             return
@@ -614,61 +616,73 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         result = cur.fetchone()
         if not result:
             logger.error(f"❌ User {applicant_id} not found in database")
-            await query.answer("❌ Користувача не знайдено.", show_alert=True)
+            await query.answer("❌ Користувача не знайдено в базі даних", show_alert=True)
+            cur.close()
+            conn.close()
             return
 
         name, username, age, city, phone, status = result
-        chat_title = f"{name} (@{username})" if username else name
-        topic = await context.bot.create_forum_topic(
-            chat_id=GROUP_ID,
-            name=f"Чат: {chat_title}"
-        )
-        logger.info(f"✅ Created new forum topic for user {applicant_id}")
+        
+        try:
+            chat_title = f"{name} (@{username})" if username else name
+            topic = await context.bot.create_forum_topic(
+                chat_id=GROUP_ID,
+                name=f"Чат: {chat_title}"
+            )
+            logger.info(f"✅ Created new forum topic for user {applicant_id}")
 
-        thread_id = topic.message_thread_id
-        cur.execute("INSERT INTO topic_mappings (telegram_id, thread_id) VALUES (%s, %s)", (applicant_id, thread_id))
-        conn.commit()
-        cur.close()
-        conn.close()
+            thread_id = topic.message_thread_id
+            cur.execute("INSERT INTO topic_mappings (telegram_id, thread_id) VALUES (%s, %s)", (applicant_id, thread_id))
+            conn.commit()
 
-        link = f"https://t.me/{username}" if username else "❓ Немає username"
-        summary = (
-            f"✅ Інформація про користувача:\n"
-            f"👤 Ім'я: {name}\n"
-            f"🎂 Вік: {age}\n"
-            f"🏙️ Місто: {city}\n"
-            f"📞 Телефон: {phone if phone else 'не надано'}\n"
-            f"🔗 Username: @{username if username else 'немає'}\n"
-            f"💬 Профіль: {link}\n"
-            f"🆔 Telegram ID: {applicant_id}\n"
-            f"📊 Статус: {status}"
-        )
+            link = f"https://t.me/{username}" if username else "❓ Немає username"
+            summary = (
+                f"✅ Інформація про користувача:\n"
+                f"👤 Ім'я: {name}\n"
+                f"🎂 Вік: {age}\n"
+                f"🏙️ Місто: {city}\n"
+                f"📞 Телефон: {phone if phone else 'не надано'}\n"
+                f"🔗 Username: @{username if username else 'немає'}\n"
+                f"💬 Профіль: {link}\n"
+                f"🆔 Telegram ID: {applicant_id}\n"
+                f"📊 Статус: {status}"
+            )
 
-        # Create buttons for all users
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("💬 Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}"),
-                InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_user:{applicant_id}")
-            ],
-            [
-                InlineKeyboardButton("✅ Прийняти", callback_data=f"set_status:{applicant_id}:Accepted"),
-                InlineKeyboardButton("❌ Відхилити", callback_data=f"set_status:{applicant_id}:Declined")
-            ]
-        ])
+            # Create buttons for all users
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("💬 Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}"),
+                    InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_user:{applicant_id}")
+                ],
+                [
+                    InlineKeyboardButton("✅ Прийняти", callback_data=f"set_status:{applicant_id}:Accepted"),
+                    InlineKeyboardButton("❌ Відхилити", callback_data=f"set_status:{applicant_id}:Declined")
+                ]
+            ])
 
-        # Update the original message with new buttons
-        await query.edit_message_reply_markup(
-            reply_markup=keyboard
-        )
+            # Update the original message with new buttons
+            await query.edit_message_reply_markup(
+                reply_markup=keyboard
+            )
 
-        # Send the summary to the new topic with the same buttons
-        await context.bot.send_message(
-            chat_id=GROUP_ID,
-            message_thread_id=thread_id,
-            text=summary,
-            reply_markup=keyboard
-        )
-        logger.info(f"✅ Chat started successfully for user {applicant_id}")
+            # Send the summary to the new topic with the same buttons
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                message_thread_id=thread_id,
+                text=summary,
+                reply_markup=keyboard
+            )
+            
+            # Show success message
+            await query.answer("✅ Чат створено успішно", show_alert=True)
+            logger.info(f"✅ Chat started successfully for user {applicant_id}")
+        except Exception as e:
+            logger.error(f"❌ Error creating forum topic: {str(e)}")
+            conn.rollback()
+            await query.answer(f"❌ Помилка при створенні чату: {str(e)[:50]}", show_alert=True)
+        finally:
+            cur.close()
+            conn.close()
     except Exception as e:
         logger.error(f"❌ Error in start_chat_callback: {str(e)}")
         await query.answer("❌ Сталася помилка при створенні чату", show_alert=True)
@@ -676,19 +690,16 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
-        await query.answer()
-
         # Check if the user is admin
         if query.from_user.id != ADMIN_ID:
             logger.warning(f"⚠️ Non-admin user {query.from_user.id} tried to delete an application")
-            await query.answer("❌ Тільки адміністратор може видаляти заявки.", show_alert=True)
-            # Get the original message text to preserve it
-            original_text = query.message.text
-            # Add the error message to the original text
-            await query.edit_message_text(
-                f"{original_text}\n\n❌ Тільки адміністратор може видаляти заявки.",
-                reply_markup=query.message.reply_markup
-            )
+            await query.answer("❌ Тільки адміністратор може видаляти заявки", show_alert=True)
+            # Send a message to notify about the unauthorized attempt
+            #await context.bot.send_message(
+            #    chat_id=query.message.chat.id,
+            #    message_thread_id=query.message.message_thread_id if query.message.is_topic_message else None,
+            #    text=f"❌ Тільки адміністратор може видаляти заявки."
+            #)
             return
 
         data = query.data
@@ -705,14 +716,13 @@ async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         cur.execute("SELECT 1 FROM applicants WHERE telegram_id = %s", (applicant_id,))
         if not cur.fetchone():
             logger.warning(f"⚠️ Attempted to delete non-existent applicant {applicant_id}")
-            await query.answer("❌ Заявку не знайдено.", show_alert=True)
-            # Get the original message text to preserve it
-            original_text = query.message.text
-            # Add the error message to the original text
-            await query.edit_message_text(
-                f"{original_text}\n\n❌ Заявку не знайдено.",
-                reply_markup=query.message.reply_markup
-            )
+            await query.answer("❌ Заявку не знайдено в базі даних", show_alert=True)
+            # Send a message to notify about the error
+            #await context.bot.send_message(
+            #    chat_id=query.message.chat.id,
+            #    message_thread_id=query.message.message_thread_id if query.message.is_topic_message else None,
+            #    text=f"❌ Заявку не знайдено."
+            #)
             cur.close()
             conn.close()
             return
@@ -738,31 +748,33 @@ async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             
             # Only after successful deletion, update the message
             await query.edit_message_text("🗑️ Заявку видалено.")
+            await query.answer("✅ Заявку успішно видалено", show_alert=True)
             logger.info(f"✅ Application deleted for user {applicant_id}")
         except Exception as e:
             logger.error(f"❌ Error during deletion: {str(e)}")
             conn.rollback()  # Rollback any partial changes
-            await query.answer("❌ Сталася помилка при видаленні заявки.", show_alert=True)
-            # Get the original message text to preserve it
-            original_text = query.message.text
-            # Add the error message to the original text
-            await query.edit_message_text(
-                f"{original_text}\n\n❌ Сталася помилка при видаленні заявки.",
-                reply_markup=query.message.reply_markup
-            )
+            await query.answer(f"❌ Помилка при видаленні заявки: {str(e)[:50]}", show_alert=True)
+            # Send a message to notify about the error
+            #await context.bot.send_message(
+            #    chat_id=query.message.chat.id,
+            #    message_thread_id=query.message.message_thread_id if query.message.is_topic_message else None,
+            #    text=f"❌ Сталася помилка при видаленні заявки."
+            #)
         finally:
             cur.close()
             conn.close()
     except Exception as e:
         logger.error(f"❌ Error in delete_user_callback: {str(e)}")
-        await query.answer("❌ Сталася помилка при видаленні заявки", show_alert=True)
-        # Get the original message text to preserve it
-        original_text = query.message.text
-        # Add the error message to the original text
-        await query.edit_message_text(
-            f"{original_text}\n\n❌ Сталася помилка при видаленні заявки.",
-            reply_markup=query.message.reply_markup
-        )
+        await query.answer(f"❌ Сталася помилка: {str(e)[:50]}", show_alert=True)
+        # Send a message to notify about the error
+        #try:
+        #    await context.bot.send_message(
+        #        chat_id=query.message.chat.id,
+        #        message_thread_id=query.message.message_thread_id if query.message.is_topic_message else None,
+        #        text=f"❌ Сталася помилка при видаленні заявки."
+        #    )
+        #except:
+        #    pass  # If we can't send a message, just continue
 
 async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -876,68 +888,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Error in cancel: {str(e)}")
         return ConversationHandler.END
 
-async def delete_message_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    try:
-        await query.answer()
-
-        if not query.data.startswith("delete_msg:"):
-            return
-
-        _, message_id, user_id = query.data.split(":")
-        message_id = int(message_id)
-        user_id = int(user_id)
-        logger.info(f"🗑️ Deleting message {message_id} for user {user_id}")
-
-        try:
-            # Delete message from user's chat
-            await context.bot.delete_message(chat_id=user_id, message_id=message_id)
-            logger.info(f"✅ Deleted message from user's chat")
-            
-            # Delete the admin's message if it exists and is accessible
-            if query.message and query.message.is_accessible:
-                try:
-                    await context.bot.delete_message(
-                        chat_id=query.message.chat.id,
-                        message_id=query.message.message_id
-                    )
-                    logger.info(f"✅ Deleted message from admin's chat")
-                except Exception as e:
-                    logger.error(f"❌ Failed to delete admin message: {str(e)}")
-            else:
-                logger.warning("⚠️ Admin message not found or inaccessible for deletion")
-            
-            # Remove the delete button from the original message if it exists and is accessible
-            if query.message and query.message.is_accessible:
-                try:
-                    await context.bot.edit_message_reply_markup(
-                        chat_id=query.message.chat.id,
-                        message_id=query.message.message_id,
-                        reply_markup=None
-                    )
-                    logger.info(f"✅ Removed delete button from message")
-                except Exception as e:
-                    logger.error(f"❌ Failed to remove delete button: {str(e)}")
-
-            # Delete from message_log
-            conn = psycopg2.connect(DB_URL)
-            cur = conn.cursor()
-            cur.execute("""
-                DELETE FROM message_log 
-                WHERE (admin_message_id = %s OR user_message_id = %s)
-            """, (query.message.message_id if query.message and query.message.is_accessible else None, message_id))
-            conn.commit()
-            cur.close()
-            conn.close()
-            logger.info(f"✅ Removed message from message_log")
-            
-        except Exception as e:
-            logger.error(f"❌ Error deleting message: {str(e)}")
-            await query.answer("❌ Не вдалося видалити повідомлення", show_alert=True)
-    except Exception as e:
-        logger.error(f"❌ Error in delete_message_callback: {str(e)}")
-        await query.answer("❌ Сталася помилка при видаленні повідомлення", show_alert=True)
-
 async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.info("🔍 Edit handler triggered")
@@ -1002,21 +952,17 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                 prefix = "👤 "
                 if edited.text:
                     # For forum topics, we need to use the full chat_id format and thread_id
-                    chat_id = f"-100{str(GROUP_ID)[4:]}"
                     await context.bot.edit_message_text(
-                        chat_id=chat_id,
+                        chat_id=GROUP_ID,
                         message_id=admin_msg_id,
-                        text=f"{prefix}{edited.text}",
-                        message_thread_id=stored_thread_id
+                        text=f"{prefix}{edited.text}"
                     )
                     logger.info("✅ Updated admin's text message")
                 elif edited.caption:
-                    chat_id = f"-100{str(GROUP_ID)[4:]}"
                     await context.bot.edit_message_caption(
-                        chat_id=chat_id,
+                        chat_id=GROUP_ID,
                         message_id=admin_msg_id,
-                        caption=f"{prefix}{edited.caption}",
-                        message_thread_id=stored_thread_id
+                        caption=f"{prefix}{edited.caption}"
                     )
                     logger.info("✅ Updated admin's message caption")
 
@@ -1118,36 +1064,47 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
     # Get the message object, either from regular message or forum topic
     message = update.message or update.edited_message
     try:
-        if not message:
-            logger.warning("❌ No message found in update")
+        if not message and not update.callback_query:
+            logger.warning("❌ No message or callback query found in update")
             return
 
         # Check if the message is from the admin group
-        if message.chat.id != GROUP_ID:
-            logger.warning(f"⚠️ Command used outside admin group: chat_id={message.chat.id}")
+        chat_id = message.chat.id if message else update.callback_query.message.chat.id
+        if chat_id != GROUP_ID:
+            logger.warning(f"⚠️ Command used outside admin group: chat_id={chat_id}")
+            if update.callback_query:
+                await update.callback_query.answer("❌ Команда доступна тільки в адмін групі", show_alert=True)
             return
 
         # Check if the user is a member of the admin group
+        user_id = message.from_user.id if message else update.callback_query.from_user.id
         try:
             chat_member = await context.bot.get_chat_member(
                 chat_id=GROUP_ID,
-                user_id=message.from_user.id
+                user_id=user_id
             )
             if chat_member.status not in ['member', 'administrator', 'creator']:
-                logger.warning(f"⚠️ Non-member tried to use command: user_id={message.from_user.id}")
+                logger.warning(f"⚠️ Non-member tried to use command: user_id={user_id}")
+                if update.callback_query:
+                    await update.callback_query.answer("❌ Ви не є учасником адмін групи", show_alert=True)
                 return
         except Exception as e:
             logger.error(f"❌ Error checking group membership: {str(e)}")
+            if update.callback_query:
+                await update.callback_query.answer("❌ Помилка перевірки членства в групі", show_alert=True)
             return
 
         # Parse command arguments
         args = context.args
         if not args:
-            await message.reply_text(
-                "❌ Будь ласка, вкажіть статус.\n"
-                "Доступні статуси: New, In Progress, Accepted, Declined\n"
-                "Приклад: /applicants_by_status New"
-            )
+            if message:
+                await message.reply_text(
+                    "❌ Будь ласка, вкажіть статус.\n"
+                    "Доступні статуси: New, In Progress, Accepted, Declined\n"
+                    "Приклад: /applicants_by_status New"
+                )
+            elif update.callback_query:
+                await update.callback_query.answer("❌ Не вказано статус", show_alert=True)
             return
 
         status = args[0]
@@ -1155,10 +1112,13 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
         per_page = 20
 
         if status not in ['New', 'In Progress', 'Accepted', 'Declined']:
-            await message.reply_text(
-                "❌ Невірний статус.\n"
-                "Доступні статуси: New, In Progress, Accepted, Declined"
-            )
+            if message:
+                await message.reply_text(
+                    "❌ Невірний статус.\n"
+                    "Доступні статуси: New, In Progress, Accepted, Declined"
+                )
+            elif update.callback_query:
+                await update.callback_query.answer("❌ Невірний статус", show_alert=True)
             return
 
         logger.info(f"📋 Listing applicants with status {status}, page {page}")
@@ -1171,7 +1131,10 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
         total_count = cur.fetchone()[0]
 
         if total_count == 0:
-            await message.reply_text(f"📭 Немає заявок зі статусом {status}")
+            if message:
+                await message.reply_text(f"📭 Немає заявок зі статусом {status}")
+            elif update.callback_query:
+                await update.callback_query.answer(f"📭 Немає заявок зі статусом {status}", show_alert=True)
             cur.close()
             conn.close()
             return
@@ -1236,11 +1199,13 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # If this is a callback query, edit the message
         if update.callback_query:
-            await update.callback_query.answer()
+            # Edit the message first
             await update.callback_query.edit_message_text(
                 text=table,
                 reply_markup=reply_markup
             )
+            # Then show the alert
+            await update.callback_query.answer(f"Список заявок: {status}, сторінка {page}/{total_pages}", show_alert=True)
         else:
             # If this is a new command, send a new message
             await message.reply_text(
@@ -1251,7 +1216,9 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.info(f"✅ Listed {len(rows)} applicants with status {status} on page {page}")
     except Exception as err:
         logger.error(f"❌ Error in applicants_by_status: {str(err)}")
-        if message:
+        if update.callback_query:
+            await update.callback_query.answer("❌ Сталася помилка при отриманні списку заявок", show_alert=True)
+        elif message:
             await message.reply_text("❌ Сталася помилка при отриманні списку заявок.")
 
 async def handle_navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1262,7 +1229,7 @@ async def handle_navigation_callback(update: Update, context: ContextTypes.DEFAU
 
         # Ignore the "current page" button
         if query.data == "ignore":
-            await query.answer()
+            await query.answer("Поточна сторінка", show_alert=True)
             return
 
         # Parse the navigation data
@@ -1273,9 +1240,12 @@ async def handle_navigation_callback(update: Update, context: ContextTypes.DEFAU
         
         # Call applicants_by_status with the new parameters
         await applicants_by_status(update, context)
+    except ValueError as err:
+        logger.error(f"❌ Invalid page number in navigation: {str(err)}")
+        await query.answer("❌ Невірний номер сторінки", show_alert=True)
     except Exception as err:
         logger.error(f"❌ Error in handle_navigation_callback: {str(err)}")
-        await query.answer("❌ Сталася помилка при навігації", show_alert=True)
+        await query.answer(f"❌ Помилка: {str(err)[:50]}", show_alert=True)
 
 async def create_applicants_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1440,7 +1410,6 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(start_chat_callback, pattern="^start_chat:"))
     app.add_handler(CallbackQueryHandler(delete_user_callback, pattern="^delete_user:"))
-    app.add_handler(CallbackQueryHandler(delete_message_callback, pattern="^delete_msg:"))
     app.add_handler(CallbackQueryHandler(handle_navigation_callback, pattern="^nav:"))
     app.add_handler(CommandHandler("admin_panel", send_admin_panel_link))
     app.add_handler(CommandHandler("applicants_by_status", applicants_by_status))
