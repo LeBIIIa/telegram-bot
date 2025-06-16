@@ -97,6 +97,16 @@ def ensure_table():
         """)
         logger.info("✅ Message reactions table verified")
         
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                id SERIAL PRIMARY KEY,
+                key TEXT NOT NULL UNIQUE,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT now()
+            )
+        """)
+        logger.info("✅ Bot settings table verified")
+        
         conn.commit()
         cur.close()
         conn.close()
@@ -104,23 +114,6 @@ def ensure_table():
     except Exception as e:
         logger.error(f"❌ Database initialization failed: {str(e)}")
         raise
-
-async def ensure_applicants_topic(application: Application):
-    global APPLICANTS_TOPIC_ID
-    try:
-        # Check if topic already exists
-        if APPLICANTS_TOPIC_ID is not None:
-            return
-
-        # Create the topic
-        topic = await application.bot.create_forum_topic(
-            chat_id=GROUP_ID,
-            name="📋 Заявки"
-        )
-        APPLICANTS_TOPIC_ID = topic.message_thread_id
-        logger.info(f"✅ Created applicants topic with ID: {APPLICANTS_TOPIC_ID}")
-    except Exception as e:
-        logger.error(f"❌ Failed to create applicants topic: {str(e)}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1056,12 +1049,20 @@ async def create_applicants_topic(update: Update, context: ContextTypes.DEFAULT_
 
         global APPLICANTS_TOPIC_ID
         
-        # Check if topic already exists
-        if APPLICANTS_TOPIC_ID is not None:
+        # Check if topic already exists in database
+        conn = psycopg2.connect(DB_URL)
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM bot_settings WHERE key = 'applicants_topic_id'")
+        result = cur.fetchone()
+        
+        if result:
+            APPLICANTS_TOPIC_ID = int(result[0])
             await update.message.reply_text(
                 f"ℹ️ Тема для заявок вже існує (ID: {APPLICANTS_TOPIC_ID}).\n"
                 "Використовуйте /delete_applicants_topic щоб видалити поточну тему."
             )
+            cur.close()
+            conn.close()
             return
 
         # Create the topic
@@ -1070,6 +1071,15 @@ async def create_applicants_topic(update: Update, context: ContextTypes.DEFAULT_
             name="📋 Заявки"
         )
         APPLICANTS_TOPIC_ID = topic.message_thread_id
+
+        # Store the topic ID in database
+        cur.execute("""
+            INSERT INTO bot_settings (key, value)
+            VALUES ('applicants_topic_id', %s)
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value, updated_at = now()
+        """, (str(APPLICANTS_TOPIC_ID),))
+        conn.commit()
 
         # Close the topic
         await context.bot.close_forum_topic(
@@ -1085,6 +1095,9 @@ async def create_applicants_topic(update: Update, context: ContextTypes.DEFAULT_
             f"Всі нові заявки будуть надходити сюди.\n"
             f"🔒 Тема закрита - тільки бот може надсилати повідомлення."
         )
+        
+        cur.close()
+        conn.close()
     except Exception as e:
         logger.error(f"❌ Failed to create applicants topic: {str(e)}")
         await update.message.reply_text("❌ Сталася помилка при створенні теми.")
@@ -1104,31 +1117,63 @@ async def delete_applicants_topic(update: Update, context: ContextTypes.DEFAULT_
 
         global APPLICANTS_TOPIC_ID
         
-        # Check if topic exists
-        if APPLICANTS_TOPIC_ID is None:
+        # Check if topic exists in database
+        conn = psycopg2.connect(DB_URL)
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM bot_settings WHERE key = 'applicants_topic_id'")
+        result = cur.fetchone()
+        
+        if not result:
             await update.message.reply_text("ℹ️ Тема для заявок ще не створена.")
+            cur.close()
+            conn.close()
             return
+
+        APPLICANTS_TOPIC_ID = int(result[0])
 
         # Delete the topic
         await context.bot.delete_forum_topic(
             chat_id=GROUP_ID,
             message_thread_id=APPLICANTS_TOPIC_ID
         )
-        logger.info(f"✅ Deleted applicants topic with ID: {APPLICANTS_TOPIC_ID}")
         
-        # Clear the topic ID
+        # Remove from database
+        cur.execute("DELETE FROM bot_settings WHERE key = 'applicants_topic_id'")
+        conn.commit()
+        
+        # Clear the global variable
         APPLICANTS_TOPIC_ID = None
+        
+        logger.info(f"✅ Deleted applicants topic with ID: {APPLICANTS_TOPIC_ID}")
         
         await update.message.reply_text(
             "✅ Тема для заявок видалена.\n"
             "Використовуйте /create_applicants_topic щоб створити нову тему."
         )
+        
+        cur.close()
+        conn.close()
     except Exception as e:
         logger.error(f"❌ Failed to delete applicants topic: {str(e)}")
         await update.message.reply_text("❌ Сталася помилка при видаленні теми.")
 
 if __name__ == '__main__':
     ensure_table()
+    
+    # Load applicants topic ID from database
+    try:
+        conn = psycopg2.connect(DB_URL)
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM bot_settings WHERE key = 'applicants_topic_id'")
+        result = cur.fetchone()
+        if result:
+            APPLICANTS_TOPIC_ID = int(result[0])
+            logger.info(f"✅ Loaded applicants topic ID from database: {APPLICANTS_TOPIC_ID}")
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"❌ Failed to load applicants topic ID: {str(e)}")
+    
     app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
