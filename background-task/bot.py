@@ -1449,8 +1449,8 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.UpdateType.EDITED, handle_message_edit))
     # Add handler for accept extra input before other message handlers
-    app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.TEXT & ~filters.COMMAND, handle_accept_extra_input))
-    app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
+    #app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.TEXT & ~filters.COMMAND, handle_accept_extra_input))
+    app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL & ~filters.COMMAND, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
     app.add_handler(MessageReactionHandler(callback=handle_message_reaction))
     app.run_polling()
