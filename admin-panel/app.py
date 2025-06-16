@@ -95,6 +95,7 @@ TEMPLATE = """
     <td>
       <form method="post" action="/update" class="inline">
         <input type="hidden" name="telegram_id" value="{{ user.telegram_id }}">
+        <input type="hidden" name="token" value="{{ request.args.get('token') }}">
         <select name="status" onchange="onStatusChange(this, '{{ user.telegram_id }}')">
           <option value="New" {% if user.status == "New" %}selected{% endif %}>New</option>
           <option value="In Progress" {% if user.status == "In Progress" %}selected{% endif %}>In Progress</option>
@@ -112,6 +113,7 @@ TEMPLATE = """
     <td>
       <form method="post" action="/delete" class="inline">
         <input type="hidden" name="telegram_id" value="{{ user.telegram_id }}">
+        <input type="hidden" name="token" value="{{ request.args.get('token') }}">
         <button type="submit">🗑️</button>
       </form>
     </td>
@@ -175,14 +177,14 @@ def index():
 
 @app.route("/update", methods=["POST"])
 def update_status():
-    token = request.args.get("token")
-    logger.info(f"Status update attempt with token: {token[:8]}...")
+    token = request.form.get("token")
+    logger.info(f"Status update attempt with token: {token[:8] if token else 'None'}...")
     
     telegram_id = validate_token(token)
     if not telegram_id:
-        logger.warning(f"Update denied: Invalid token {token[:8]}...")
+        logger.warning(f"Update denied: Invalid token {token[:8] if token else 'None'}...")
         return abort(403)
-        
+          
     applicant_id = request.form["telegram_id"]
     new_status = request.form["status"]
     accepted_city = request.form.get("accepted_city")
@@ -228,13 +230,13 @@ def update_status():
 
 @app.route("/delete", methods=["POST"])
 def delete_user():
-    token = request.args.get("token")
-    logger.info(f"Delete user attempt with token: {token[:8]}...")
+    token = request.form.get("token")
+    logger.info(f"Delete user attempt with token: {token[:8] if token else 'None'}...")
     
     telegram_id = validate_token(token)
     
     if not telegram_id:
-        logger.warning(f"Delete denied: Invalid token {token[:8]}...")
+        logger.warning(f"Delete denied: Invalid token {token[:8] if token else 'None'}...")
         return abort(403)
         
     if telegram_id != ADMIN_ID:
