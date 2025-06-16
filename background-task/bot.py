@@ -575,6 +575,13 @@ async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if query.from_user.id != ADMIN_ID:
             logger.warning(f"⚠️ Non-admin user {query.from_user.id} tried to delete an application")
             await query.answer("❌ Тільки адміністратор може видаляти заявки.", show_alert=True)
+            # Get the original message text to preserve it
+            original_text = query.message.text
+            # Add the error message to the original text
+            await query.edit_message_text(
+                f"{original_text}\n\n❌ Тільки адміністратор може видаляти заявки.",
+                reply_markup=query.message.reply_markup
+            )
             return
 
         data = query.data
@@ -592,6 +599,13 @@ async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if not cur.fetchone():
             logger.warning(f"⚠️ Attempted to delete non-existent applicant {applicant_id}")
             await query.answer("❌ Заявку не знайдено.", show_alert=True)
+            # Get the original message text to preserve it
+            original_text = query.message.text
+            # Add the error message to the original text
+            await query.edit_message_text(
+                f"{original_text}\n\n❌ Заявку не знайдено.",
+                reply_markup=query.message.reply_markup
+            )
             cur.close()
             conn.close()
             return
@@ -622,12 +636,26 @@ async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.error(f"❌ Error during deletion: {str(e)}")
             conn.rollback()  # Rollback any partial changes
             await query.answer("❌ Сталася помилка при видаленні заявки.", show_alert=True)
+            # Get the original message text to preserve it
+            original_text = query.message.text
+            # Add the error message to the original text
+            await query.edit_message_text(
+                f"{original_text}\n\n❌ Сталася помилка при видаленні заявки.",
+                reply_markup=query.message.reply_markup
+            )
         finally:
             cur.close()
             conn.close()
     except Exception as e:
         logger.error(f"❌ Error in delete_user_callback: {str(e)}")
         await query.answer("❌ Сталася помилка при видаленні заявки", show_alert=True)
+        # Get the original message text to preserve it
+        original_text = query.message.text
+        # Add the error message to the original text
+        await query.edit_message_text(
+            f"{original_text}\n\n❌ Сталася помилка при видаленні заявки.",
+            reply_markup=query.message.reply_markup
+        )
 
 async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -734,20 +762,14 @@ async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_accept_extra_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        admin_id = update.effective_user.id
-        
-        # Check if the user is admin
-        if admin_id != ADMIN_ID:
-            logger.warning(f"⚠️ Non-admin user {admin_id} tried to accept an application")
-            await update.message.reply_text("❌ Тільки адміністратор може приймати заявки.")
-            return
+        user_id = update.effective_user.id
             
         # Only process if there's a pending accept
-        if admin_id not in pending_accepts:
+        if user_id not in pending_accepts:
             # Let the message be handled by other handlers
             return
 
-        telegram_id = pending_accepts.pop(admin_id)
+        telegram_id = pending_accepts.pop(user_id)
         logger.info(f"📝 Processing accept input for user {telegram_id}")
 
         # First, verify the applicant exists
@@ -775,7 +797,7 @@ async def handle_accept_extra_input(update: Update, context: ContextTypes.DEFAUL
                 parse_mode=ParseMode.MARKDOWN
             )
             # Restore the pending accept
-            pending_accepts[admin_id] = telegram_id
+            pending_accepts[user_id] = telegram_id
             # Delete the message to prevent it from being forwarded
             try:
                 await update.message.delete()
