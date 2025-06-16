@@ -358,11 +358,36 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if new_status == "Accepted":
             pending_accepts[query.from_user.id] = tg_id
-            await query.edit_message_reply_markup(None)
-            await query.edit_message_text(
-                "✅ Прийнято! Введіть місто та дату у форматі: `Київ:2025-07-01`",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            # Get user info to preserve it
+            cur.execute("""
+                SELECT name, age, city, phone, username, telegram_id, status
+                FROM applicants WHERE telegram_id = %s
+            """, (tg_id,))
+            user_info = cur.fetchone()
+            
+            if user_info:
+                name, age, city, phone, username, telegram_id, status = user_info
+                username_str = f"@{username}" if username else "—"
+                phone_str = phone if phone else "—"
+                user_summary = (
+                    f"👤 Ім'я: {name}\n"
+                    f"🎂 Вік: {age}\n"
+                    f"🏙️ Місто: {city}\n"
+                    f"📞 Телефон: {phone_str}\n"
+                    f"🔗 Username: {username_str}\n"
+                    f"🆔 Telegram ID: {telegram_id}\n"
+                    f"📊 Статус: {status}\n\n"
+                    f"✅ Прийнято! Введіть місто та дату у форматі: `Київ:2025-07-01`"
+                )
+                await query.edit_message_text(
+                    user_summary,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await query.edit_message_text(
+                    "✅ Прийнято! Введіть місто та дату у форматі: `Київ:2025-07-01`",
+                    parse_mode=ParseMode.MARKDOWN
+                )
             logger.info(f"⏳ Waiting for city and date input for user {tg_id}")
         else:
             cur.execute("UPDATE applicants SET status = %s WHERE telegram_id = %s", (new_status, tg_id))
@@ -378,8 +403,31 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             conn.commit()
             cur.close()
             conn.close()
-            await query.edit_message_reply_markup(None)
-            await query.edit_message_text(f"✅ Статус оновлено: {new_status}")
+            
+            # Get user info to preserve it
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT name, age, city, phone, username, telegram_id, status
+                FROM applicants WHERE telegram_id = %s
+            """, (tg_id,))
+            user_info = cur.fetchone()
+            
+            if user_info:
+                name, age, city, phone, username, telegram_id, status = user_info
+                username_str = f"@{username}" if username else "—"
+                phone_str = phone if phone else "—"
+                user_summary = (
+                    f"👤 Ім'я: {name}\n"
+                    f"🎂 Вік: {age}\n"
+                    f"🏙️ Місто: {city}\n"
+                    f"📞 Телефон: {phone_str}\n"
+                    f"🔗 Username: {username_str}\n"
+                    f"🆔 Telegram ID: {telegram_id}\n"
+                    f"📊 Статус: {new_status}"
+                )
+                await query.edit_message_text(user_summary)
+            else:
+                await query.edit_message_text(f"✅ Статус оновлено: {new_status}")
             logger.info(f"✅ Status updated for user {tg_id} to {new_status}")
     except Exception as e:
         logger.error(f"❌ Error in set_status_callback: {str(e)}")
@@ -647,9 +695,18 @@ async def handle_accept_extra_input(update: Update, context: ContextTypes.DEFAUL
 
         try:
             city, date = update.message.text.strip().split(":")
+            # Validate date format
+            from datetime import datetime
+            datetime.strptime(date.strip(), "%Y-%m-%d")
         except ValueError:
             logger.warning(f"⚠️ Invalid format for accept input: {update.message.text}")
-            await update.message.reply_text("❌ Невірний формат. Введіть як: `Київ:2025-07-01`", parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(
+                "❌ Невірний формат. Введіть як: `Київ:2025-07-01`\n"
+                "Дата повинна бути у форматі YYYY-MM-DD",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            # Restore the pending accept
+            pending_accepts[admin_id] = telegram_id
             return
 
         conn = psycopg2.connect(DB_URL)
@@ -674,7 +731,31 @@ async def handle_accept_extra_input(update: Update, context: ContextTypes.DEFAUL
         cur.close()
         conn.close()
 
-        await update.message.reply_text("✅ Дані збережено та чат закрито.")
+        # Get user info to show final status
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT name, age, city, phone, username, telegram_id, status, accepted_city, accepted_date::text
+            FROM applicants WHERE telegram_id = %s
+        """, (telegram_id,))
+        user_info = cur.fetchone()
+        
+        if user_info:
+            name, age, city, phone, username, telegram_id, status, accepted_city, accepted_date = user_info
+            username_str = f"@{username}" if username else "—"
+            phone_str = phone if phone else "—"
+            user_summary = (
+                f"👤 Ім'я: {name}\n"
+                f"🎂 Вік: {age}\n"
+                f"🏙️ Місто: {city}\n"
+                f"📞 Телефон: {phone_str}\n"
+                f"🔗 Username: {username_str}\n"
+                f"🆔 Telegram ID: {telegram_id}\n"
+                f"📊 Статус: {status}\n"
+                f"✅ Прийнято: {accepted_city}, {accepted_date}"
+            )
+            await update.message.reply_text(user_summary)
+        else:
+            await update.message.reply_text("✅ Дані збережено та чат закрито.")
         logger.info(f"✅ Application accepted for user {telegram_id}")
     except Exception as e:
         logger.error(f"❌ Error in handle_accept_extra_input: {str(e)}")
@@ -845,15 +926,16 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
         reaction = update.message_reaction
         message_id = reaction.message_id
         user_id = reaction.user.id
+        chat_id = reaction.chat.id
         
-        logger.info(f"😀 Processing reaction change from user {user_id} on message {message_id}")
+        logger.info(f"😀 Processing reaction change from user {user_id} on message {message_id} in chat {chat_id}")
 
         conn = psycopg2.connect(DB_URL)
         cur = conn.cursor()
 
         # Look up the message mapping
         cur.execute("""
-            SELECT admin_message_id, user_message_id, telegram_id
+            SELECT admin_message_id, user_message_id, telegram_id, thread_id
             FROM message_log
             WHERE admin_message_id = %s OR user_message_id = %s
         """, (message_id, message_id))
@@ -865,8 +947,8 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
             conn.close()
             return
 
-        admin_msg_id, user_msg_id, telegram_id = result
-        logger.info(f"✅ Found message mapping - admin_msg: {admin_msg_id}, user_msg: {user_msg_id}, user_id: {telegram_id}")
+        admin_msg_id, user_msg_id, telegram_id, thread_id = result
+        logger.info(f"✅ Found message mapping - admin_msg: {admin_msg_id}, user_msg: {user_msg_id}, user_id: {telegram_id}, thread_id: {thread_id}")
 
         try:
             if message_id == admin_msg_id:
@@ -882,8 +964,10 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
             elif message_id == user_msg_id:
                 logger.info("🔄 Processing user reaction -> admin")
                 # User reacted — update admin
+                # For forum topics, we need to use the full chat_id format
+                chat_id = f"-100{str(GROUP_ID)[4:]}"
                 await context.bot.set_message_reaction(
-                    chat_id=GROUP_ID,
+                    chat_id=chat_id,
                     message_id=admin_msg_id,
                     reaction=reaction.new_reaction
                 )
@@ -909,11 +993,18 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
 
         except Exception as e:
             logger.error(f"❌ Reaction sync failed: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            # Try to log more details about the error
+            if hasattr(e, 'response'):
+                logger.error(f"Response: {e.response}")
 
         cur.close()
         conn.close()
     except Exception as e:
         logger.error(f"❌ Error in handle_message_reaction: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        if hasattr(e, 'response'):
+            logger.error(f"Response: {e.response}")
 
 async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Get the message object, either from regular message or forum topic
@@ -1068,13 +1159,14 @@ async def handle_navigation_callback(update: Update, context: ContextTypes.DEFAU
 
         # Parse the navigation data
         _, status, page = query.data.split(":")
-        page = int(page)
-
+        
+        # Set the context args for applicants_by_status
+        context.args = [status, page]
+        
         # Call applicants_by_status with the new parameters
-        context.args = [status, str(page)]
         await applicants_by_status(update, context)
-    except Exception as e:
-        logger.error(f"❌ Error in handle_navigation_callback: {str(e)}")
+    except Exception as err:
+        logger.error(f"❌ Error in handle_navigation_callback: {str(err)}")
         await query.answer("❌ Сталася помилка при навігації", show_alert=True)
 
 async def create_applicants_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
