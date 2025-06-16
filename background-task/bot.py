@@ -260,6 +260,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🆔 Telegram ID: {telegram_id}"
         )
 
+        # Create buttons for all users
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("💬 Почати чат", callback_data=f"start_chat:{telegram_id}"),
@@ -350,11 +351,26 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         await query.answer()
 
+        # Check if the user is admin
+        if query.from_user.id != ADMIN_ID:
+            logger.warning(f"⚠️ Non-admin user {query.from_user.id} tried to change status")
+            await query.answer("❌ Тільки адміністратор може змінювати статус.", show_alert=True)
+            return
+
         _, tg_id, new_status = query.data.split(":")
         logger.info(f"🔄 Setting status for user {tg_id} to {new_status}")
 
         conn = psycopg2.connect(DB_URL)
         cur = conn.cursor()
+
+        # First, verify the applicant exists
+        cur.execute("SELECT 1 FROM applicants WHERE telegram_id = %s", (tg_id,))
+        if not cur.fetchone():
+            logger.warning(f"⚠️ Attempted to change status for non-existent applicant {tg_id}")
+            await query.answer("❌ Заявку не знайдено.", show_alert=True)
+            cur.close()
+            conn.close()
+            return
 
         if new_status == "Accepted":
             pending_accepts[query.from_user.id] = tg_id
@@ -390,45 +406,55 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
             logger.info(f"⏳ Waiting for city and date input for user {tg_id}")
         else:
-            cur.execute("UPDATE applicants SET status = %s WHERE telegram_id = %s", (new_status, tg_id))
-            cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (tg_id,))
-            topic = cur.fetchone()
-            if topic:
-                try:
-                    await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
-                    logger.info(f"🗑️ Deleted forum topic for user {tg_id}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to delete forum topic: {str(e)}")
-                cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (tg_id,))
-            conn.commit()
-            cur.close()
-            conn.close()
-            
-            # Get user info to preserve it
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT name, age, city, phone, username, telegram_id, status
-                FROM applicants WHERE telegram_id = %s
-            """, (tg_id,))
-            user_info = cur.fetchone()
-            
-            if user_info:
-                name, age, city, phone, username, telegram_id, status = user_info
-                username_str = f"@{username}" if username else "—"
-                phone_str = phone if phone else "—"
-                user_summary = (
-                    f"👤 Ім'я: {name}\n"
-                    f"🎂 Вік: {age}\n"
-                    f"🏙️ Місто: {city}\n"
-                    f"📞 Телефон: {phone_str}\n"
-                    f"🔗 Username: {username_str}\n"
-                    f"🆔 Telegram ID: {telegram_id}\n"
-                    f"📊 Статус: {new_status}"
-                )
-                await query.edit_message_text(user_summary)
-            else:
-                await query.edit_message_text(f"✅ Статус оновлено: {new_status}")
-            logger.info(f"✅ Status updated for user {tg_id} to {new_status}")
+            try:
+                cur.execute("UPDATE applicants SET status = %s WHERE telegram_id = %s", (new_status, tg_id))
+                
+                # Get topic info before deletion
+                cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (tg_id,))
+                topic = cur.fetchone()
+                
+                if topic:
+                    try:
+                        await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
+                        logger.info(f"🗑️ Deleted forum topic for user {tg_id}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to delete forum topic: {str(e)}")
+                        # Continue with other operations even if topic deletion fails
+                    cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (tg_id,))
+                
+                conn.commit()
+                
+                # Get user info to preserve it
+                cur.execute("""
+                    SELECT name, age, city, phone, username, telegram_id, status
+                    FROM applicants WHERE telegram_id = %s
+                """, (tg_id,))
+                user_info = cur.fetchone()
+                
+                if user_info:
+                    name, age, city, phone, username, telegram_id, status = user_info
+                    username_str = f"@{username}" if username else "—"
+                    phone_str = phone if phone else "—"
+                    user_summary = (
+                        f"👤 Ім'я: {name}\n"
+                        f"🎂 Вік: {age}\n"
+                        f"🏙️ Місто: {city}\n"
+                        f"📞 Телефон: {phone_str}\n"
+                        f"🔗 Username: {username_str}\n"
+                        f"🆔 Telegram ID: {telegram_id}\n"
+                        f"📊 Статус: {new_status}"
+                    )
+                    await query.edit_message_text(user_summary)
+                else:
+                    await query.edit_message_text(f"✅ Статус оновлено: {new_status}")
+                logger.info(f"✅ Status updated for user {tg_id} to {new_status}")
+            except Exception as e:
+                logger.error(f"❌ Error updating status: {str(e)}")
+                conn.rollback()
+                await query.answer("❌ Сталася помилка при оновленні статусу.", show_alert=True)
+            finally:
+                cur.close()
+                conn.close()
     except Exception as e:
         logger.error(f"❌ Error in set_status_callback: {str(e)}")
         await query.answer("❌ Сталася помилка при оновленні статусу", show_alert=True)
@@ -456,17 +482,21 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             # Chat already exists, update only the button
             thread_id = existing_topic[0]
             logger.info(f"ℹ️ Chat already exists for user {applicant_id}")
+            
+            # Create buttons for all users
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("💬 Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}"),
+                    InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_user:{applicant_id}")
+                ],
+                [
+                    InlineKeyboardButton("✅ Прийняти", callback_data=f"set_status:{applicant_id}:Accepted"),
+                    InlineKeyboardButton("❌ Відхилити", callback_data=f"set_status:{applicant_id}:Declined")
+                ]
+            ])
+            
             await query.edit_message_reply_markup(
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("💬 Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}"),
-                        InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_user:{applicant_id}")
-                    ],
-                    [
-                        InlineKeyboardButton("✅ Прийняти", callback_data=f"set_status:{applicant_id}:Accepted"),
-                        InlineKeyboardButton("❌ Відхилити", callback_data=f"set_status:{applicant_id}:Declined")
-                    ]
-                ])
+                reply_markup=keyboard
             )
             cur.close()
             conn.close()
@@ -477,7 +507,7 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         result = cur.fetchone()
         if not result:
             logger.error(f"❌ User {applicant_id} not found in database")
-            await query.edit_message_text("❌ Користувача не знайдено.")
+            await query.answer("❌ Користувача не знайдено.", show_alert=True)
             return
 
         name, username, age, city, phone, status = result
@@ -507,32 +537,29 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"📊 Статус: {status}"
         )
 
+        # Create buttons for all users
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("💬 Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}"),
+                InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_user:{applicant_id}")
+            ],
+            [
+                InlineKeyboardButton("✅ Прийняти", callback_data=f"set_status:{applicant_id}:Accepted"),
+                InlineKeyboardButton("❌ Відхилити", callback_data=f"set_status:{applicant_id}:Declined")
+            ]
+        ])
+
         # Update the original message with new buttons
         await query.edit_message_reply_markup(
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("💬 Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}"),
-                    InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_user:{applicant_id}")
-                ],
-                [
-                    InlineKeyboardButton("✅ Прийняти", callback_data=f"set_status:{applicant_id}:Accepted"),
-                    InlineKeyboardButton("❌ Відхилити", callback_data=f"set_status:{applicant_id}:Declined")
-                ]
-            ])
+            reply_markup=keyboard
         )
 
-        # Send the summary to the new topic without the "go to chat" button
+        # Send the summary to the new topic with the same buttons
         await context.bot.send_message(
             chat_id=GROUP_ID,
             message_thread_id=thread_id,
             text=summary,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_user:{applicant_id}")],
-                [
-                    InlineKeyboardButton("✅ Прийняти", callback_data=f"set_status:{applicant_id}:Accepted"),
-                    InlineKeyboardButton("❌ Відхилити", callback_data=f"set_status:{applicant_id}:Declined")
-                ]
-            ])
+            reply_markup=keyboard
         )
         logger.info(f"✅ Chat started successfully for user {applicant_id}")
     except Exception as e:
@@ -547,7 +574,7 @@ async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         # Check if the user is admin
         if query.from_user.id != ADMIN_ID:
             logger.warning(f"⚠️ Non-admin user {query.from_user.id} tried to delete an application")
-            await query.edit_message_text("❌ Тільки адміністратор може видаляти заявки.")
+            await query.answer("❌ Тільки адміністратор може видаляти заявки.", show_alert=True)
             return
 
         data = query.data
@@ -557,26 +584,47 @@ async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         applicant_id = int(data.split(":")[1])
         logger.info(f"🗑️ Deleting application for user {applicant_id}")
 
+        # First, verify the applicant exists
         conn = psycopg2.connect(DB_URL)
         cur = conn.cursor()
+        
+        cur.execute("SELECT 1 FROM applicants WHERE telegram_id = %s", (applicant_id,))
+        if not cur.fetchone():
+            logger.warning(f"⚠️ Attempted to delete non-existent applicant {applicant_id}")
+            await query.answer("❌ Заявку не знайдено.", show_alert=True)
+            cur.close()
+            conn.close()
+            return
 
+        # Get topic info before deletion
         cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
         topic = cur.fetchone()
-        if topic:
-            try:
-                await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
-                logger.info(f"✅ Deleted forum topic for user {applicant_id}")
-            except Exception as e:
-                logger.error(f"❌ Failed to delete forum topic: {str(e)}")
-            cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
 
-        cur.execute("DELETE FROM applicants WHERE telegram_id = %s", (applicant_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
+        try:
+            # Delete the topic if it exists
+            if topic:
+                try:
+                    await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
+                    logger.info(f"✅ Deleted forum topic for user {applicant_id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to delete forum topic: {str(e)}")
+                    # Continue with other deletions even if topic deletion fails
+                cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
 
-        await query.edit_message_text("🗑️ Заявку видалено.")
-        logger.info(f"✅ Application deleted for user {applicant_id}")
+            # Delete the applicant data
+            cur.execute("DELETE FROM applicants WHERE telegram_id = %s", (applicant_id,))
+            conn.commit()
+            
+            # Only after successful deletion, update the message
+            await query.edit_message_text("🗑️ Заявку видалено.")
+            logger.info(f"✅ Application deleted for user {applicant_id}")
+        except Exception as e:
+            logger.error(f"❌ Error during deletion: {str(e)}")
+            conn.rollback()  # Rollback any partial changes
+            await query.answer("❌ Сталася помилка при видаленні заявки.", show_alert=True)
+        finally:
+            cur.close()
+            conn.close()
     except Exception as e:
         logger.error(f"❌ Error in delete_user_callback: {str(e)}")
         await query.answer("❌ Сталася помилка при видаленні заявки", show_alert=True)
@@ -687,11 +735,32 @@ async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_accept_extra_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         admin_id = update.effective_user.id
+        
+        # Check if the user is admin
+        if admin_id != ADMIN_ID:
+            logger.warning(f"⚠️ Non-admin user {admin_id} tried to accept an application")
+            await update.message.reply_text("❌ Тільки адміністратор може приймати заявки.")
+            return
+            
+        # Only process if there's a pending accept
         if admin_id not in pending_accepts:
+            # Let the message be handled by other handlers
             return
 
         telegram_id = pending_accepts.pop(admin_id)
         logger.info(f"📝 Processing accept input for user {telegram_id}")
+
+        # First, verify the applicant exists
+        conn = psycopg2.connect(DB_URL)
+        cur = conn.cursor()
+        
+        cur.execute("SELECT 1 FROM applicants WHERE telegram_id = %s", (telegram_id,))
+        if not cur.fetchone():
+            logger.warning(f"⚠️ Attempted to accept non-existent applicant {telegram_id}")
+            await update.message.reply_text("❌ Заявку не знайдено.")
+            cur.close()
+            conn.close()
+            return
 
         try:
             city, date = update.message.text.strip().split(":")
@@ -707,56 +776,73 @@ async def handle_accept_extra_input(update: Update, context: ContextTypes.DEFAUL
             )
             # Restore the pending accept
             pending_accepts[admin_id] = telegram_id
+            # Delete the message to prevent it from being forwarded
+            try:
+                await update.message.delete()
+            except Exception as e:
+                logger.error(f"❌ Failed to delete message: {str(e)}")
             return
 
-        conn = psycopg2.connect(DB_URL)
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE applicants
-            SET accepted_city = %s, accepted_date = %s, status = 'Accepted'
-            WHERE telegram_id = %s
-        """, (city.strip(), date.strip(), telegram_id))
+        try:
+            cur.execute("""
+                UPDATE applicants
+                SET accepted_city = %s, accepted_date = %s, status = 'Accepted'
+                WHERE telegram_id = %s
+            """, (city.strip(), date.strip(), telegram_id))
 
-        cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
-        topic = cur.fetchone()
-        if topic:
+            # Get topic info before deletion
+            cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
+            topic = cur.fetchone()
+            
+            if topic:
+                try:
+                    await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
+                    logger.info(f"✅ Deleted forum topic for user {telegram_id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to delete forum topic: {str(e)}")
+                    # Continue with other operations even if topic deletion fails
+                cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
+
+            conn.commit()
+
+            # Get user info to show final status
+            cur.execute("""
+                SELECT name, age, city, phone, username, telegram_id, status, accepted_city, accepted_date::text
+                FROM applicants WHERE telegram_id = %s
+            """, (telegram_id,))
+            user_info = cur.fetchone()
+            
+            if user_info:
+                name, age, city, phone, username, telegram_id, status, accepted_city, accepted_date = user_info
+                username_str = f"@{username}" if username else "—"
+                phone_str = phone if phone else "—"
+                user_summary = (
+                    f"👤 Ім'я: {name}\n"
+                    f"🎂 Вік: {age}\n"
+                    f"🏙️ Місто: {city}\n"
+                    f"📞 Телефон: {phone_str}\n"
+                    f"🔗 Username: {username_str}\n"
+                    f"🆔 Telegram ID: {telegram_id}\n"
+                    f"📊 Статус: {status}\n"
+                    f"✅ Прийнято: {accepted_city}, {accepted_date}"
+                )
+                await update.message.reply_text(user_summary)
+            else:
+                await update.message.reply_text("✅ Дані збережено та чат закрито.")
+            logger.info(f"✅ Application accepted for user {telegram_id}")
+            
+            # Delete the input message to prevent it from being forwarded
             try:
-                await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
-                logger.info(f"✅ Deleted forum topic for user {telegram_id}")
+                await update.message.delete()
             except Exception as e:
-                logger.error(f"❌ Failed to delete forum topic: {str(e)}")
-            cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
-
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        # Get user info to show final status
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT name, age, city, phone, username, telegram_id, status, accepted_city, accepted_date::text
-            FROM applicants WHERE telegram_id = %s
-        """, (telegram_id,))
-        user_info = cur.fetchone()
-        
-        if user_info:
-            name, age, city, phone, username, telegram_id, status, accepted_city, accepted_date = user_info
-            username_str = f"@{username}" if username else "—"
-            phone_str = phone if phone else "—"
-            user_summary = (
-                f"👤 Ім'я: {name}\n"
-                f"🎂 Вік: {age}\n"
-                f"🏙️ Місто: {city}\n"
-                f"📞 Телефон: {phone_str}\n"
-                f"🔗 Username: {username_str}\n"
-                f"🆔 Telegram ID: {telegram_id}\n"
-                f"📊 Статус: {status}\n"
-                f"✅ Прийнято: {accepted_city}, {accepted_date}"
-            )
-            await update.message.reply_text(user_summary)
-        else:
-            await update.message.reply_text("✅ Дані збережено та чат закрито.")
-        logger.info(f"✅ Application accepted for user {telegram_id}")
+                logger.error(f"❌ Failed to delete message: {str(e)}")
+        except Exception as e:
+            logger.error(f"❌ Error during acceptance: {str(e)}")
+            conn.rollback()
+            await update.message.reply_text("❌ Сталася помилка при збереженні даних.")
+        finally:
+            cur.close()
+            conn.close()
     except Exception as e:
         logger.error(f"❌ Error in handle_accept_extra_input: {str(e)}")
         await update.message.reply_text("❌ Сталася помилка при збереженні даних.")
@@ -1340,6 +1426,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("delete_applicants_topic", delete_applicants_topic))
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.UpdateType.EDITED, handle_message_edit))
+    # Add handler for accept extra input before other message handlers
+    app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.TEXT & ~filters.COMMAND, handle_accept_extra_input))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
     app.add_handler(MessageReactionHandler(callback=handle_message_reaction))
