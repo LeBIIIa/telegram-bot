@@ -174,7 +174,7 @@ def index():
     return render_template_string(TEMPLATE, users=users, is_admin=telegram_id == ADMIN_ID)
 
 @app.route("/update", methods=["POST"])
-async def update_status():
+def update_status():
     token = request.args.get("token")
     logger.info(f"Status update attempt with token: {token[:8]}...")
     
