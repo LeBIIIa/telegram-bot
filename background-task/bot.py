@@ -412,14 +412,19 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         existing_topic = cur.fetchone()
         
         if existing_topic:
-            # Chat already exists, show the link
+            # Chat already exists, update only the button
             thread_id = existing_topic[0]
             logger.info(f"ℹ️ Chat already exists for user {applicant_id}")
-            await query.edit_message_reply_markup(None)
-            await query.edit_message_text(
-                "💬 Чат вже існує. Натисніть кнопку нижче, щоб перейти до нього.",
+            await query.edit_message_reply_markup(
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("➡️ Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}")]
+                    [
+                        InlineKeyboardButton("💬 Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}"),
+                        InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_user:{applicant_id}")
+                    ],
+                    [
+                        InlineKeyboardButton("✅ Прийняти", callback_data=f"set_status:{applicant_id}:Accepted"),
+                        InlineKeyboardButton("❌ Відхилити", callback_data=f"set_status:{applicant_id}:Declined")
+                    ]
                 ])
             )
             cur.close()
@@ -461,12 +466,31 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"📊 Статус: {status}"
         )
 
+        # Update the original message with new buttons
+        await query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("💬 Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}"),
+                    InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_user:{applicant_id}")
+                ],
+                [
+                    InlineKeyboardButton("✅ Прийняти", callback_data=f"set_status:{applicant_id}:Accepted"),
+                    InlineKeyboardButton("❌ Відхилити", callback_data=f"set_status:{applicant_id}:Declined")
+                ]
+            ])
+        )
+
+        # Send the summary to the new topic without the "go to chat" button
         await context.bot.send_message(
             chat_id=GROUP_ID,
             message_thread_id=thread_id,
             text=summary,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➡️ Перейти до чату", url=f"https://t.me/c/{str(GROUP_ID)[4:]}/{thread_id}")]
+                [InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_user:{applicant_id}")],
+                [
+                    InlineKeyboardButton("✅ Прийняти", callback_data=f"set_status:{applicant_id}:Accepted"),
+                    InlineKeyboardButton("❌ Відхилити", callback_data=f"set_status:{applicant_id}:Declined")
+                ]
             ])
         )
         logger.info(f"✅ Chat started successfully for user {applicant_id}")
@@ -520,6 +544,11 @@ async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFA
     try:
         msg = update.message
         if not msg or not msg.message_thread_id:
+            logger.info("❌ No message found, returning")
+            return
+        
+        if update.edited_message:
+            logger.info("❌ Edited message found, returning")
             return
             
         thread_id = msg.message_thread_id
@@ -566,7 +595,12 @@ async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFA
 async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not update.message:
-            return  # Not a message update, skip
+            logger.info("❌ No message found, returning")
+            return
+        
+        if update.edited_message:
+            logger.info("❌ Edited message found, returning")
+            return
 
         telegram_id = update.message.from_user.id
         logger.info(f"📨 Processing user message from {telegram_id}")
@@ -723,7 +757,6 @@ async def delete_message_callback(update: Update, context: ContextTypes.DEFAULT_
 async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.info("🔍 Edit handler triggered")
-        logger.info(f"Has edited_message: {update.edited_message is not None}")
         
         if not update.edited_message:
             logger.info("❌ No edited message found, returning")
@@ -731,15 +764,11 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         edited = update.edited_message
         message_id = edited.message_id
-        thread_id = edited.message_thread_id  # Optional; only for admin messages in threads
+        thread_id = edited.message_thread_id
         
         logger.info(f"📝 Processing edit for message_id: {message_id}")
         logger.info(f"📝 Thread ID: {thread_id}")
         logger.info(f"📝 Message type: {'text' if edited.text else 'caption' if edited.caption else 'other'}")
-        if edited.text:
-            logger.info(f"📝 New text: {edited.text[:50]}...")
-        if edited.caption:
-            logger.info(f"📝 New caption: {edited.caption[:50]}...")
 
         conn = psycopg2.connect(DB_URL)
         cur = conn.cursor()
@@ -757,7 +786,7 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if not result:
             logger.warning("❌ No message mapping found in database")
-            return  # No log match
+            return
 
         admin_msg_id, user_msg_id, telegram_id = result
         logger.info(f"✅ Found message mapping - admin_msg: {admin_msg_id}, user_msg: {user_msg_id}, user_id: {telegram_id}")
@@ -771,7 +800,10 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await context.bot.edit_message_text(
                         chat_id=telegram_id,
                         message_id=user_msg_id,
-                        text=edited.text
+                        text=edited.text,
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_msg:{user_msg_id}:{telegram_id}")
+                        ]])
                     )
                     logger.info("✅ Updated user's text message")
                 elif edited.caption:
@@ -779,7 +811,10 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await context.bot.edit_message_caption(
                         chat_id=telegram_id,
                         message_id=user_msg_id,
-                        caption=edited.caption
+                        caption=edited.caption,
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_msg:{user_msg_id}:{telegram_id}")
+                        ]])
                     )
                     logger.info("✅ Updated user's message caption")
 
@@ -792,7 +827,10 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                         chat_id=GROUP_ID,
                         message_id=admin_msg_id,
                         message_thread_id=thread_id,
-                        text=f"{prefix}{edited.text}"
+                        text=f"{prefix}{edited.text}",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_msg:{admin_msg_id}:{telegram_id}")
+                        ]])
                     )
                     logger.info("✅ Updated admin's text message")
                 elif edited.caption:
@@ -800,7 +838,10 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                         chat_id=GROUP_ID,
                         message_id=admin_msg_id,
                         message_thread_id=thread_id,
-                        caption=f"{prefix}{edited.caption}"
+                        caption=f"{prefix}{edited.caption}",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_msg:{admin_msg_id}:{telegram_id}")
+                        ]])
                     )
                     logger.info("✅ Updated admin's message caption")
 
@@ -1110,8 +1151,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("create_applicants_topic", create_applicants_topic))
     app.add_handler(CommandHandler("delete_applicants_topic", delete_applicants_topic))
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
+    app.add_handler(MessageHandler(filters.UpdateType.EDITED, handle_message_edit))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
-    app.add_handler(MessageHandler(filters.UpdateType.EDITED, handle_message_edit))
     app.add_handler(MessageReactionHandler(callback=handle_message_reaction))
     app.run_polling()
