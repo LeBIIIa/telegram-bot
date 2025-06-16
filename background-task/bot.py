@@ -473,21 +473,33 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 name, age, city, phone, username, telegram_id, status = user_info
                 username_str = f"@{username}" if username else "—"
                 phone_str = phone if phone else "—"
+                
+                # Escape any potential Markdown characters in user-provided data
+                name_escaped = name.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
+                city_escaped = city.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
+                username_str_escaped = username_str.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
+                phone_str_escaped = phone_str.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
+                
                 user_summary = (
-                    f"👤 Ім'я: {name}\n"
+                    f"👤 Ім'я: {name_escaped}\n"
                     f"🎂 Вік: {age}\n"
-                    f"🏙️ Місто: {city}\n"
-                    f"📞 Телефон: {phone_str}\n"
-                    f"🔗 Username: {username_str}\n"
+                    f"🏙️ Місто: {city_escaped}\n"
+                    f"📞 Телефон: {phone_str_escaped}\n"
+                    f"🔗 Username: {username_str_escaped}\n"
                     f"🆔 Telegram ID: {telegram_id}\n"
                     f"📊 Статус: {status}\n\n"
                     f"✅ Прийнято! Введіть команду у форматі:\n"
                     f"`/accept {tg_id} Київ:2025-07-01`"
                 )
-                await query.edit_message_text(
-                    user_summary,
-                    parse_mode=ParseMode.MARKDOWN
-                )
+                try:
+                    await query.edit_message_text(
+                        user_summary,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except Exception as md_error:
+                    logger.error(f"❌ Markdown formatting error: {str(md_error)}")
+                    # Fallback to plain text if Markdown fails
+                    await query.edit_message_text(user_summary)
             else:
                 await query.edit_message_text(
                     "✅ Прийнято! Введіть команду у форматі:\n"
