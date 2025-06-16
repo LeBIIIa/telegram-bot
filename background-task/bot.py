@@ -5,7 +5,7 @@ from telegram import (
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters,
     ContextTypes, ConversationHandler, CallbackQueryHandler,
-    MessageReactionHandler, Application
+    MessageReactionHandler
 )
 import os
 import psycopg2
@@ -544,6 +544,11 @@ async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFA
             logger.info("❌ Edited message found, returning")
             return
             
+        # Skip if message is from the bot itself
+        if msg.from_user and msg.from_user.id == context.bot.id:
+            logger.info("❌ Message is from bot, returning")
+            return
+            
         thread_id = msg.message_thread_id
         logger.info(f"📨 Processing admin message in thread {thread_id}")
 
@@ -565,12 +570,6 @@ async def handle_admin_group_messages(update: Update, context: ContextTypes.DEFA
             sent_message = await msg.copy(chat_id=applicant_id)
             
             if sent_message:
-                # Add the delete button to the admin's message
-                delete_button = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🗑️ Видалити", callback_data=f"delete_msg:{sent_message.message_id}:{applicant_id}")
-                ]])
-                await msg.edit_reply_markup(reply_markup=delete_button)
-                
                 cur.execute("""
                     INSERT INTO message_log (admin_message_id, user_message_id, telegram_id, thread_id, message_type)
                     VALUES (%s, %s, %s, %s, %s)
@@ -593,6 +592,11 @@ async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if update.edited_message:
             logger.info("❌ Edited message found, returning")
+            return
+
+        # Skip if message is from the bot itself
+        if update.message.from_user and update.message.from_user.id == context.bot.id:
+            logger.info("❌ Message is from bot, returning")
             return
 
         telegram_id = update.message.from_user.id
