@@ -819,8 +819,7 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await context.bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=admin_msg_id,
-                        text=f"{prefix}{edited.text}",
-                        message_thread_id=stored_thread_id
+                        text=f"{prefix}{edited.text}"
                     )
                     logger.info("✅ Updated admin's text message")
                 elif edited.caption:
@@ -828,8 +827,7 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await context.bot.edit_message_caption(
                         chat_id=chat_id,
                         message_id=admin_msg_id,
-                        caption=f"{prefix}{edited.caption}",
-                        message_thread_id=stored_thread_id
+                        caption=f"{prefix}{edited.caption}"
                     )
                     logger.info("✅ Updated admin's message caption")
 
