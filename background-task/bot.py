@@ -1023,18 +1023,20 @@ async def create_applicants_topic(update: Update, context: ContextTypes.DEFAULT_
             )
             return
 
-        # Create the topic
+        # Create the topic with is_closed=True
         topic = await context.bot.create_forum_topic(
             chat_id=GROUP_ID,
-            name="📋 Заявки"
+            name="📋 Заявки",
+            is_closed=True
         )
         APPLICANTS_TOPIC_ID = topic.message_thread_id
-        logger.info(f"✅ Created applicants topic with ID: {APPLICANTS_TOPIC_ID}")
+        logger.info(f"✅ Created closed applicants topic with ID: {APPLICANTS_TOPIC_ID}")
         
         await update.message.reply_text(
             f"✅ Тема для заявок створена!\n"
             f"ID теми: {APPLICANTS_TOPIC_ID}\n"
-            f"Всі нові заявки будуть надходити сюди."
+            f"Всі нові заявки будуть надходити сюди.\n"
+            f"🔒 Тема закрита - тільки бот може надсилати повідомлення."
         )
     except Exception as e:
         logger.error(f"❌ Failed to create applicants topic: {str(e)}")
