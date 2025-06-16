@@ -5,14 +5,13 @@ from telegram import (
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters,
     ContextTypes, ConversationHandler, CallbackQueryHandler,
-    MessageReactionHandler
+    MessageReactionHandler, Application
 )
 import os
 import psycopg2
 import uuid
 import logging
 from telegram.constants import ParseMode
-import asyncio
 
 # Configure logging
 logging.basicConfig(
@@ -106,7 +105,7 @@ def ensure_table():
         logger.error(f"❌ Database initialization failed: {str(e)}")
         raise
 
-async def ensure_applicants_topic(context: ContextTypes.DEFAULT_TYPE):
+async def ensure_applicants_topic(application: Application):
     global APPLICANTS_TOPIC_ID
     try:
         # Check if topic already exists
@@ -114,7 +113,7 @@ async def ensure_applicants_topic(context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Create the topic
-        topic = await context.bot.create_forum_topic(
+        topic = await application.bot.create_forum_topic(
             chat_id=GROUP_ID,
             name="📋 Заявки"
         )
@@ -994,12 +993,101 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"❌ Error in applicants_by_status: {str(e)}")
         await update.message.reply_text("❌ Сталася помилка при отриманні списку заявок.")
 
+async def create_applicants_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # Check if the message is from the admin group
+        if update.effective_chat.id != GROUP_ID:
+            logger.warning(f"⚠️ Command used outside admin group: chat_id={update.effective_chat.id}")
+            return
+
+        # Check if the user is a member of the admin group
+        try:
+            chat_member = await context.bot.get_chat_member(
+                chat_id=GROUP_ID,
+                user_id=update.effective_user.id
+            )
+            if chat_member.status not in ['member', 'administrator', 'creator']:
+                logger.warning(f"⚠️ Non-member tried to use command: user_id={update.effective_user.id}")
+                return
+        except Exception as e:
+            logger.error(f"❌ Error checking group membership: {str(e)}")
+            return
+
+        global APPLICANTS_TOPIC_ID
+        
+        # Check if topic already exists
+        if APPLICANTS_TOPIC_ID is not None:
+            await update.message.reply_text(
+                f"ℹ️ Тема для заявок вже існує (ID: {APPLICANTS_TOPIC_ID}).\n"
+                "Використовуйте /delete-applicants-topic щоб видалити поточну тему."
+            )
+            return
+
+        # Create the topic
+        topic = await context.bot.create_forum_topic(
+            chat_id=GROUP_ID,
+            name="📋 Заявки"
+        )
+        APPLICANTS_TOPIC_ID = topic.message_thread_id
+        logger.info(f"✅ Created applicants topic with ID: {APPLICANTS_TOPIC_ID}")
+        
+        await update.message.reply_text(
+            f"✅ Тема для заявок створена!\n"
+            f"ID теми: {APPLICANTS_TOPIC_ID}\n"
+            f"Всі нові заявки будуть надходити сюди."
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to create applicants topic: {str(e)}")
+        await update.message.reply_text("❌ Сталася помилка при створенні теми.")
+
+async def delete_applicants_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # Check if the message is from the admin group
+        if update.effective_chat.id != GROUP_ID:
+            logger.warning(f"⚠️ Command used outside admin group: chat_id={update.effective_chat.id}")
+            return
+
+        # Check if the user is a member of the admin group
+        try:
+            chat_member = await context.bot.get_chat_member(
+                chat_id=GROUP_ID,
+                user_id=update.effective_user.id
+            )
+            if chat_member.status not in ['member', 'administrator', 'creator']:
+                logger.warning(f"⚠️ Non-member tried to use command: user_id={update.effective_user.id}")
+                return
+        except Exception as e:
+            logger.error(f"❌ Error checking group membership: {str(e)}")
+            return
+
+        global APPLICANTS_TOPIC_ID
+        
+        # Check if topic exists
+        if APPLICANTS_TOPIC_ID is None:
+            await update.message.reply_text("ℹ️ Тема для заявок ще не створена.")
+            return
+
+        # Delete the topic
+        await context.bot.delete_forum_topic(
+            chat_id=GROUP_ID,
+            message_thread_id=APPLICANTS_TOPIC_ID
+        )
+        logger.info(f"✅ Deleted applicants topic with ID: {APPLICANTS_TOPIC_ID}")
+        
+        # Clear the topic ID
+        APPLICANTS_TOPIC_ID = None
+        
+        await update.message.reply_text(
+            "✅ Тема для заявок видалена.\n"
+            "Використовуйте /create-applicants-topic щоб створити нову тему."
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to delete applicants topic: {str(e)}")
+        await update.message.reply_text("❌ Сталася помилка при видаленні теми.")
+
 if __name__ == '__main__':
     ensure_table()
     app = ApplicationBuilder().token(TOKEN).build()
-
-    # Create applicants topic on startup
-    asyncio.run(ensure_applicants_topic(app))
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -1018,6 +1106,8 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(delete_message_callback, pattern="^delete_msg:"))
     app.add_handler(CommandHandler("admin-panel", send_admin_panel_link))
     app.add_handler(CommandHandler("applicants-by-status", applicants_by_status))
+    app.add_handler(CommandHandler("create-applicants-topic", create_applicants_topic))
+    app.add_handler(CommandHandler("delete-applicants-topic", delete_applicants_topic))
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
