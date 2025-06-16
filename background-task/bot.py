@@ -914,7 +914,7 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(
                 "❌ Будь ласка, вкажіть статус.\n"
                 "Доступні статуси: New, In Progress, Accepted, Declined\n"
-                "Приклад: /applicants-by-status New"
+                "Приклад: /applicants_by_status New"
             )
             return
 
@@ -983,9 +983,9 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
         if total_pages > 1:
             table += "📄 Навігація:\n"
             if page > 1:
-                table += f"◀️ /applicants-by-status {status} {page-1}\n"
+                table += f"◀️ /applicants_by_status {status} {page-1}\n"
             if page < total_pages:
-                table += f"▶️ /applicants-by-status {status} {page+1}\n"
+                table += f"▶️ /applicants_by_status {status} {page+1}\n"
 
         await update.message.reply_text(table)
         logger.info(f"✅ Listed {len(rows)} applicants with status {status} on page {page}")
@@ -1019,7 +1019,7 @@ async def create_applicants_topic(update: Update, context: ContextTypes.DEFAULT_
         if APPLICANTS_TOPIC_ID is not None:
             await update.message.reply_text(
                 f"ℹ️ Тема для заявок вже існує (ID: {APPLICANTS_TOPIC_ID}).\n"
-                "Використовуйте /delete-applicants-topic щоб видалити поточну тему."
+                "Використовуйте /delete_applicants_topic щоб видалити поточну тему."
             )
             return
 
@@ -1049,17 +1049,10 @@ async def delete_applicants_topic(update: Update, context: ContextTypes.DEFAULT_
             logger.warning(f"⚠️ Command used outside admin group: chat_id={update.effective_chat.id}")
             return
 
-        # Check if the user is a member of the admin group
-        try:
-            chat_member = await context.bot.get_chat_member(
-                chat_id=GROUP_ID,
-                user_id=update.effective_user.id
-            )
-            if chat_member.status not in ['member', 'administrator', 'creator']:
-                logger.warning(f"⚠️ Non-member tried to use command: user_id={update.effective_user.id}")
-                return
-        except Exception as e:
-            logger.error(f"❌ Error checking group membership: {str(e)}")
+        # Check if the user is the admin
+        if update.effective_user.id != ADMIN_ID:
+            logger.warning(f"⚠️ Non-admin user {update.effective_user.id} tried to delete applicants topic")
+            await update.message.reply_text("❌ Тільки адміністратор може видаляти тему заявок.")
             return
 
         global APPLICANTS_TOPIC_ID
@@ -1081,7 +1074,7 @@ async def delete_applicants_topic(update: Update, context: ContextTypes.DEFAULT_
         
         await update.message.reply_text(
             "✅ Тема для заявок видалена.\n"
-            "Використовуйте /create-applicants-topic щоб створити нову тему."
+            "Використовуйте /create_applicants_topic щоб створити нову тему."
         )
     except Exception as e:
         logger.error(f"❌ Failed to delete applicants topic: {str(e)}")
@@ -1106,10 +1099,10 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(start_chat_callback, pattern="^start_chat:"))
     app.add_handler(CallbackQueryHandler(delete_user_callback, pattern="^delete_user:"))
     app.add_handler(CallbackQueryHandler(delete_message_callback, pattern="^delete_msg:"))
-    app.add_handler(CommandHandler("admin-panel", send_admin_panel_link))
-    app.add_handler(CommandHandler("applicants-by-status", applicants_by_status))
-    app.add_handler(CommandHandler("create-applicants-topic", create_applicants_topic))
-    app.add_handler(CommandHandler("delete-applicants-topic", delete_applicants_topic))
+    app.add_handler(CommandHandler("admin_panel", send_admin_panel_link))
+    app.add_handler(CommandHandler("applicants_by_status", applicants_by_status))
+    app.add_handler(CommandHandler("create_applicants_topic", create_applicants_topic))
+    app.add_handler(CommandHandler("delete_applicants_topic", delete_applicants_topic))
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
