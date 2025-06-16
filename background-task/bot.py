@@ -393,7 +393,8 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"🔗 Username: {username_str}\n"
                     f"🆔 Telegram ID: {telegram_id}\n"
                     f"📊 Статус: {status}\n\n"
-                    f"✅ Прийнято! Введіть місто та дату у форматі: `Київ:2025-07-01`"
+                    f"✅ Прийнято! Введіть команду у форматі:\n"
+                    f"`/accept {tg_id} Київ:2025-07-01`"
                 )
                 await query.edit_message_text(
                     user_summary,
@@ -401,10 +402,11 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
             else:
                 await query.edit_message_text(
-                    "✅ Прийнято! Введіть місто та дату у форматі: `Київ:2025-07-01`",
+                    "✅ Прийнято! Введіть команду у форматі:\n"
+                    f"`/accept {tg_id} Київ:2025-07-01`",
                     parse_mode=ParseMode.MARKDOWN
                 )
-            logger.info(f"⏳ Waiting for city and date input for user {tg_id}")
+            logger.info(f"⏳ Waiting for accept command for user {tg_id}")
         else:
             try:
                 cur.execute("UPDATE applicants SET status = %s WHERE telegram_id = %s", (new_status, tg_id))
@@ -458,6 +460,111 @@ async def set_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"❌ Error in set_status_callback: {str(e)}")
         await query.answer("❌ Сталася помилка при оновленні статусу", show_alert=True)
+
+async def accept_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # Check if the user is admin
+        if update.effective_user.id != ADMIN_ID:
+            logger.warning(f"⚠️ Non-admin user {update.effective_user.id} tried to use accept command")
+            await update.message.reply_text("❌ Тільки адміністратор може використовувати цю команду.")
+            return
+
+        # Check if there are enough arguments
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "❌ Невірний формат команди.\n"
+                "Використання: `/accept <telegram_id> <місто:дата>`\n"
+                "Приклад: `/accept 123456789 Київ:2025-07-01`",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        telegram_id = int(context.args[0])
+        city_date = context.args[1]
+
+        try:
+            city, date = city_date.split(":")
+            # Validate date format
+            from datetime import datetime
+            datetime.strptime(date.strip(), "%Y-%m-%d")
+        except ValueError:
+            logger.warning(f"⚠️ Invalid format for accept command: {city_date}")
+            await update.message.reply_text(
+                "❌ Невірний формат дати. Введіть як: `Київ:2025-07-01`\n"
+                "Дата повинна бути у форматі YYYY-MM-DD",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        conn = psycopg2.connect(DB_URL)
+        cur = conn.cursor()
+
+        # First, verify the applicant exists
+        cur.execute("SELECT 1 FROM applicants WHERE telegram_id = %s", (telegram_id,))
+        if not cur.fetchone():
+            logger.warning(f"⚠️ Attempted to accept non-existent applicant {telegram_id}")
+            await update.message.reply_text("❌ Заявку не знайдено.")
+            cur.close()
+            conn.close()
+            return
+
+        try:
+            cur.execute("""
+                UPDATE applicants
+                SET accepted_city = %s, accepted_date = %s, status = 'Accepted'
+                WHERE telegram_id = %s
+            """, (city.strip(), date.strip(), telegram_id))
+
+            # Get topic info before deletion
+            cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
+            topic = cur.fetchone()
+            
+            if topic:
+                try:
+                    await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
+                    logger.info(f"✅ Deleted forum topic for user {telegram_id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to delete forum topic: {str(e)}")
+                    # Continue with other operations even if topic deletion fails
+                cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
+
+            conn.commit()
+
+            # Get user info to show final status
+            cur.execute("""
+                SELECT name, age, city, phone, username, telegram_id, status, accepted_city, accepted_date::text
+                FROM applicants WHERE telegram_id = %s
+            """, (telegram_id,))
+            user_info = cur.fetchone()
+            
+            if user_info:
+                name, age, city, phone, username, telegram_id, status, accepted_city, accepted_date = user_info
+                username_str = f"@{username}" if username else "—"
+                phone_str = phone if phone else "—"
+                user_summary = (
+                    f"👤 Ім'я: {name}\n"
+                    f"🎂 Вік: {age}\n"
+                    f"🏙️ Місто: {city}\n"
+                    f"📞 Телефон: {phone_str}\n"
+                    f"🔗 Username: {username_str}\n"
+                    f"🆔 Telegram ID: {telegram_id}\n"
+                    f"📊 Статус: {status}\n"
+                    f"✅ Прийнято: {accepted_city}, {accepted_date}"
+                )
+                await update.message.reply_text(user_summary)
+            else:
+                await update.message.reply_text("✅ Дані збережено та чат закрито.")
+            logger.info(f"✅ Application accepted for user {telegram_id}")
+        except Exception as e:
+            logger.error(f"❌ Error during acceptance: {str(e)}")
+            conn.rollback()
+            await update.message.reply_text("❌ Сталася помилка при збереженні даних.")
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        logger.error(f"❌ Error in accept_command: {str(e)}")
+        await update.message.reply_text("❌ Сталася помилка при збереженні даних.")
 
 async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -760,115 +867,6 @@ async def forward_to_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Error in forward_to_topic: {str(e)}")
 
-async def handle_accept_extra_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user_id = update.effective_user.id
-            
-        # Only process if there's a pending accept
-        if user_id not in pending_accepts:
-            # Let the message be handled by other handlers
-            return
-
-        telegram_id = pending_accepts.pop(user_id)
-        logger.info(f"📝 Processing accept input for user {telegram_id}")
-
-        # First, verify the applicant exists
-        conn = psycopg2.connect(DB_URL)
-        cur = conn.cursor()
-        
-        cur.execute("SELECT 1 FROM applicants WHERE telegram_id = %s", (telegram_id,))
-        if not cur.fetchone():
-            logger.warning(f"⚠️ Attempted to accept non-existent applicant {telegram_id}")
-            await update.message.reply_text("❌ Заявку не знайдено.")
-            cur.close()
-            conn.close()
-            return
-
-        try:
-            city, date = update.message.text.strip().split(":")
-            # Validate date format
-            from datetime import datetime
-            datetime.strptime(date.strip(), "%Y-%m-%d")
-        except ValueError:
-            logger.warning(f"⚠️ Invalid format for accept input: {update.message.text}")
-            await update.message.reply_text(
-                "❌ Невірний формат. Введіть як: `Київ:2025-07-01`\n"
-                "Дата повинна бути у форматі YYYY-MM-DD",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            # Restore the pending accept
-            pending_accepts[user_id] = telegram_id
-            # Delete the message to prevent it from being forwarded
-            try:
-                await update.message.delete()
-            except Exception as e:
-                logger.error(f"❌ Failed to delete message: {str(e)}")
-            return
-
-        try:
-            cur.execute("""
-                UPDATE applicants
-                SET accepted_city = %s, accepted_date = %s, status = 'Accepted'
-                WHERE telegram_id = %s
-            """, (city.strip(), date.strip(), telegram_id))
-
-            # Get topic info before deletion
-            cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
-            topic = cur.fetchone()
-            
-            if topic:
-                try:
-                    await context.bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
-                    logger.info(f"✅ Deleted forum topic for user {telegram_id}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to delete forum topic: {str(e)}")
-                    # Continue with other operations even if topic deletion fails
-                cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
-
-            conn.commit()
-
-            # Get user info to show final status
-            cur.execute("""
-                SELECT name, age, city, phone, username, telegram_id, status, accepted_city, accepted_date::text
-                FROM applicants WHERE telegram_id = %s
-            """, (telegram_id,))
-            user_info = cur.fetchone()
-            
-            if user_info:
-                name, age, city, phone, username, telegram_id, status, accepted_city, accepted_date = user_info
-                username_str = f"@{username}" if username else "—"
-                phone_str = phone if phone else "—"
-                user_summary = (
-                    f"👤 Ім'я: {name}\n"
-                    f"🎂 Вік: {age}\n"
-                    f"🏙️ Місто: {city}\n"
-                    f"📞 Телефон: {phone_str}\n"
-                    f"🔗 Username: {username_str}\n"
-                    f"🆔 Telegram ID: {telegram_id}\n"
-                    f"📊 Статус: {status}\n"
-                    f"✅ Прийнято: {accepted_city}, {accepted_date}"
-                )
-                await update.message.reply_text(user_summary)
-            else:
-                await update.message.reply_text("✅ Дані збережено та чат закрито.")
-            logger.info(f"✅ Application accepted for user {telegram_id}")
-            
-            # Delete the input message to prevent it from being forwarded
-            try:
-                await update.message.delete()
-            except Exception as e:
-                logger.error(f"❌ Failed to delete message: {str(e)}")
-        except Exception as e:
-            logger.error(f"❌ Error during acceptance: {str(e)}")
-            conn.rollback()
-            await update.message.reply_text("❌ Сталася помилка при збереженні даних.")
-        finally:
-            cur.close()
-            conn.close()
-    except Exception as e:
-        logger.error(f"❌ Error in handle_accept_extra_input: {str(e)}")
-        await update.message.reply_text("❌ Сталася помилка при збереженні даних.")
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.info(f"🚫 Conversation cancelled by user {update.message.from_user.id}")
@@ -1008,7 +1006,8 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await context.bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=admin_msg_id,
-                        text=f"{prefix}{edited.text}"
+                        text=f"{prefix}{edited.text}",
+                        message_thread_id=stored_thread_id
                     )
                     logger.info("✅ Updated admin's text message")
                 elif edited.caption:
@@ -1016,7 +1015,8 @@ async def handle_message_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await context.bot.edit_message_caption(
                         chat_id=chat_id,
                         message_id=admin_msg_id,
-                        caption=f"{prefix}{edited.caption}"
+                        caption=f"{prefix}{edited.caption}",
+                        message_thread_id=stored_thread_id
                     )
                     logger.info("✅ Updated admin's message caption")
 
@@ -1446,10 +1446,9 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("applicants_by_status", applicants_by_status))
     app.add_handler(CommandHandler("create_applicants_topic", create_applicants_topic))
     app.add_handler(CommandHandler("delete_applicants_topic", delete_applicants_topic))
+    app.add_handler(CommandHandler("accept", accept_command))
     app.add_handler(CallbackQueryHandler(set_status_callback, pattern="^set_status:"))
     app.add_handler(MessageHandler(filters.UpdateType.EDITED, handle_message_edit))
-    # Add handler for accept extra input before other message handlers
-    #app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.TEXT & ~filters.COMMAND, handle_accept_extra_input))
     app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.ALL & ~filters.COMMAND, handle_admin_group_messages))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, forward_to_topic))
     app.add_handler(MessageReactionHandler(callback=handle_message_reaction))
