@@ -1,9 +1,16 @@
 from flask import Flask, request, render_template_string, redirect, abort
 import os
 import psycopg2
-import uuid
 import telegram
-from datetime import datetime, timedelta
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 datetime_format = "%Y-%m-%d %H:%M:%S"
 TOKEN_TTL_MINUTES = 10
@@ -14,7 +21,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID", "0"))
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
+logger.info(f"Starting admin panel with GROUP_ID: {GROUP_ID}, ADMIN_ID: {ADMIN_ID}")
+
 def validate_token(token):
+    logger.info(f"Validating token: {token[:8]}...")
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
     
@@ -30,17 +40,11 @@ def validate_token(token):
     conn.close()
     
     if not result:
+        logger.warning(f"Token validation failed: {token[:8]}...")
         return None
     
+    logger.info(f"Token validated successfully for user_id: {result[0]}")
     return result[0]  # Return the telegram_id associated with the token
-
-def is_group_member(telegram_id):
-    try:
-        bot = telegram.Bot(token=BOT_TOKEN)
-        chat_member = bot.get_chat_member(chat_id=GROUP_ID, user_id=telegram_id)
-        return chat_member.status in ['member', 'administrator', 'creator']
-    except:
-        return False
 
 TEMPLATE = """
 <!doctype html>
@@ -129,11 +133,17 @@ function onStatusChange(select, id) {
 @app.route("/admin")
 def index():
     token = request.args.get("token")
+    logger.info(f"Admin panel access attempt with token: {token[:8]}...")
+    
     telegram_id = validate_token(token)
-    if not telegram_id or not is_group_member(telegram_id):
+    if not telegram_id:
+        logger.warning(f"Access denied: Invalid token {token[:8]}...")
         return abort(403)
-
+        
+    logger.info(f"Admin panel access granted to user {telegram_id}")
     status_filter = request.args.get("status")
+    logger.info(f"Status filter applied: {status_filter}")
+    
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
 
@@ -157,21 +167,30 @@ def index():
         telegram_id=r[5], status=r[6], accepted_city=r[7], accepted_date=r[8]
     ) for r in rows]
     
+    logger.info(f"Retrieved {len(users)} applications for user {telegram_id}")
+    
     cur.close()
     conn.close()
     return render_template_string(TEMPLATE, users=users, is_admin=telegram_id == ADMIN_ID)
 
 @app.route("/update", methods=["POST"])
-def update_status():
+async def update_status():
     token = request.args.get("token")
+    logger.info(f"Status update attempt with token: {token[:8]}...")
+    
     telegram_id = validate_token(token)
-    if not telegram_id or not is_group_member(telegram_id):
+    if not telegram_id:
+        logger.warning(f"Update denied: Invalid token {token[:8]}...")
         return abort(403)
-
+        
     applicant_id = request.form["telegram_id"]
     new_status = request.form["status"]
     accepted_city = request.form.get("accepted_city")
     accepted_date = request.form.get("accepted_date")
+    
+    logger.info(f"User {telegram_id} updating applicant {applicant_id} to status '{new_status}'")
+    if new_status == "Accepted":
+        logger.info(f"Accepted details - City: {accepted_city}, Date: {accepted_date}")
 
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
@@ -189,28 +208,41 @@ def update_status():
         cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
         topic = cur.fetchone()
         if topic:
+            logger.info(f"Attempting to delete forum topic for applicant {applicant_id}, thread_id: {topic[0]}")
             bot = telegram.Bot(token=BOT_TOKEN)
             try:
                 bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
-            except:
-                pass
+                logger.info(f"Forum topic deleted successfully")
+            except Exception as e:
+                logger.error(f"Error deleting forum topic: {str(e)}")
+            
             cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
+            logger.info(f"Topic mapping deleted from database")
 
     conn.commit()
     cur.close()
     conn.close()
-
+    
+    logger.info(f"Status update completed successfully")
     return redirect(f"/admin?token={token}")
 
 @app.route("/delete", methods=["POST"])
 def delete_user():
     token = request.args.get("token")
+    logger.info(f"Delete user attempt with token: {token[:8]}...")
+    
     telegram_id = validate_token(token)
     
-    if not telegram_id or telegram_id != ADMIN_ID:
+    if not telegram_id:
+        logger.warning(f"Delete denied: Invalid token {token[:8]}...")
+        return abort(403)
+        
+    if telegram_id != ADMIN_ID:
+        logger.warning(f"Delete denied: User {telegram_id} is not the admin (ADMIN_ID: {ADMIN_ID})")
         return abort(403)
 
     applicant_id = request.form["telegram_id"]
+    logger.info(f"Admin {telegram_id} deleting applicant {applicant_id}")
 
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
@@ -218,19 +250,26 @@ def delete_user():
     topic = cur.fetchone()
 
     if topic:
+        logger.info(f"Attempting to delete forum topic for applicant {applicant_id}, thread_id: {topic[0]}")
         bot = telegram.Bot(token=BOT_TOKEN)
         try:
             bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
-        except:
-            pass
+            logger.info(f"Forum topic deleted successfully")
+        except Exception as e:
+            logger.error(f"Error deleting forum topic: {str(e)}")
+            
         cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
+        logger.info(f"Topic mapping deleted from database")
 
     cur.execute("DELETE FROM applicants WHERE telegram_id = %s", (applicant_id,))
+    logger.info(f"Applicant record deleted from database")
     conn.commit()
     cur.close()
     conn.close()
 
+    logger.info(f"Delete operation completed successfully")
     return redirect(f"/admin?token={token}")
 
 if __name__ == '__main__':
+    logger.info("Starting Flask application")
     app.run(host='0.0.0.0', port=5000)
