@@ -1023,13 +1023,19 @@ async def create_applicants_topic(update: Update, context: ContextTypes.DEFAULT_
             )
             return
 
-        # Create the topic with is_closed=True
+        # Create the topic
         topic = await context.bot.create_forum_topic(
             chat_id=GROUP_ID,
-            name="📋 Заявки",
-            is_closed=True
+            name="📋 Заявки"
         )
         APPLICANTS_TOPIC_ID = topic.message_thread_id
+
+        # Close the topic
+        await context.bot.close_forum_topic(
+            chat_id=GROUP_ID,
+            message_thread_id=APPLICANTS_TOPIC_ID
+        )
+        
         logger.info(f"✅ Created closed applicants topic with ID: {APPLICANTS_TOPIC_ID}")
         
         await update.message.reply_text(
