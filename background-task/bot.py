@@ -385,21 +385,52 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 text=f"🔐 Ваше посилання на панель адміністратора (дійсне 10 хвилин):\n{url}",
                 disable_web_page_preview=True
             )
-            # Also update the original message to confirm
-            await query.edit_message_text(
-                "🔐 Посилання відправлено вам в приватні повідомлення.\n"
-                "Перевірте ваші особисті повідомлення з ботом.",
-                reply_markup=query.message.reply_markup
-            )
+            
+            # Check if the message content is already the same
+            current_text = query.message.text
+            new_text = "🔐 Посилання відправлено вам в приватні повідомлення.\nПеревірте ваші особисті повідомлення з ботом."
+            
+            # Only edit if the content is different
+            if current_text != new_text:
+                # Also update the original message to confirm
+                await query.edit_message_text(
+                    new_text,
+                    reply_markup=query.message.reply_markup
+                )
+            else:
+                # Just answer the callback to acknowledge
+                logger.info("Message content already matches, skipping edit")
         except Exception as e:
             logger.error(f"❌ Failed to send private message: {str(e)}")
             # If we can't send a private message, show the link in the group
-            await query.edit_message_text(
-                f"🔐 Ваше посилання на панель адміністратора (дійсне 10 хвилин):\n{url}\n\n"
-                f"⚠️ Не вдалося відправити посилання в приватні повідомлення. "
-                f"Будь ласка, почніть приватний чат з ботом.",
-                disable_web_page_preview=True
-            )
+            try:
+                # Create a message with the URL
+                new_text = (
+                    f"🔐 Ваше посилання на панель адміністратора (дійсне 10 хвилин):\n{url}\n\n"
+                    f"⚠️ Не вдалося відправити посилання в приватні повідомлення. "
+                    f"Будь ласка, почніть приватний чат з ботом."
+                )
+                
+                # Check if the content is already the same
+                if query.message.text != new_text:
+                    await query.edit_message_text(
+                        new_text,
+                        disable_web_page_preview=True
+                    )
+                else:
+                    # Just log the issue
+                    logger.info("Message content already matches, skipping edit")
+            except Exception as edit_error:
+                logger.error(f"❌ Failed to edit message: {str(edit_error)}")
+                # If editing fails, try to send a new message
+                try:
+                    await context.bot.send_message(
+                        chat_id=query.message.chat_id,
+                        text=f"🔐 Ваше посилання на панель адміністратора (дійсне 10 хвилин):\n{url}",
+                        disable_web_page_preview=True
+                    )
+                except Exception as send_error:
+                    logger.error(f"❌ Failed to send new message: {str(send_error)}")
             
     except Exception as e:
         logger.error(f"❌ Error in admin_panel_callback: {str(e)}")
@@ -1258,13 +1289,26 @@ async def applicants_by_status(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # If this is a callback query, edit the message
         if update.callback_query:
-            # Edit the message first
-            await update.callback_query.edit_message_text(
-                text=table,
-                reply_markup=reply_markup
-            )
-            # Then show the alert
-            await update.callback_query.answer(f"Список заявок: {status}, сторінка {page}/{total_pages}", show_alert=True)
+            try:
+                # Check if the message content is already the same
+                current_text = update.callback_query.message.text
+                if current_text != table:
+                    # Edit the message first
+                    await update.callback_query.edit_message_text(
+                        text=table,
+                        reply_markup=reply_markup
+                    )
+                else:
+                    # If content is the same, just update the reply markup
+                    await update.callback_query.edit_message_reply_markup(
+                        reply_markup=reply_markup
+                    )
+                # Then show the alert
+                await update.callback_query.answer(f"Список заявок: {status}, сторінка {page}/{total_pages}", show_alert=True)
+            except Exception as edit_error:
+                logger.error(f"❌ Failed to edit message: {str(edit_error)}")
+                # Just show the alert without modifying the message
+                await update.callback_query.answer(f"Список заявок: {status}, сторінка {page}/{total_pages}", show_alert=True)
         else:
             # If this is a new command, send a new message
             await message.reply_text(
