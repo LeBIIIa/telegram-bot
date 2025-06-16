@@ -12,6 +12,7 @@ app = Flask(__name__)
 DB_URL = os.getenv("DATABASE_URL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID", "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 def validate_token(token):
     conn = psycopg2.connect(DB_URL)
@@ -21,13 +22,25 @@ def validate_token(token):
     cur.execute("DELETE FROM admin_tokens WHERE now() - created_at > interval '%s minutes'", (TOKEN_TTL_MINUTES,))
     
     # Check if token exists and is valid
-    cur.execute("SELECT 1 FROM admin_tokens WHERE token = %s", (token,))
-    valid = cur.fetchone() is not None
+    cur.execute("SELECT telegram_id FROM admin_tokens WHERE token = %s", (token,))
+    result = cur.fetchone()
     
     conn.commit()
     cur.close()
     conn.close()
-    return valid
+    
+    if not result:
+        return None
+    
+    return result[0]  # Return the telegram_id associated with the token
+
+def is_group_member(telegram_id):
+    try:
+        bot = telegram.Bot(token=BOT_TOKEN)
+        chat_member = bot.get_chat_member(chat_id=GROUP_ID, user_id=telegram_id)
+        return chat_member.status in ['member', 'administrator', 'creator']
+    except:
+        return False
 
 TEMPLATE = """
 <!doctype html>
@@ -61,7 +74,7 @@ TEMPLATE = """
 <table border="1" cellpadding="5">
   <tr>
     <th>Ім'я</th><th>Вік</th><th>Місто</th><th>Телефон</th><th>Username</th>
-    <th>Статус</th><th>Оновити</th><th>Видалити</th>
+    <th>Статус</th><th>Оновити</th>{% if is_admin %}<th>Видалити</th>{% endif %}
   </tr>
   {% for user in users %}
   <tr>
@@ -91,12 +104,14 @@ TEMPLATE = """
         <button type="submit">💾</button>
       </form>
     </td>
+    {% if is_admin %}
     <td>
       <form method="post" action="/delete" class="inline">
         <input type="hidden" name="telegram_id" value="{{ user.telegram_id }}">
         <button type="submit">🗑️</button>
       </form>
     </td>
+    {% endif %}
   </tr>
   {% endfor %}
 </table>
@@ -114,7 +129,8 @@ function onStatusChange(select, id) {
 @app.route("/admin")
 def index():
     token = request.args.get("token")
-    if not token or not validate_token(token):
+    telegram_id = validate_token(token)
+    if not telegram_id or not is_group_member(telegram_id):
         return abort(403)
 
     status_filter = request.args.get("status")
@@ -143,15 +159,16 @@ def index():
     
     cur.close()
     conn.close()
-    return render_template_string(TEMPLATE, users=users)
+    return render_template_string(TEMPLATE, users=users, is_admin=telegram_id == ADMIN_ID)
 
 @app.route("/update", methods=["POST"])
 def update_status():
     token = request.args.get("token")
-    if not token or not validate_token(token):
+    telegram_id = validate_token(token)
+    if not telegram_id or not is_group_member(telegram_id):
         return abort(403)
 
-    telegram_id = request.form["telegram_id"]
+    applicant_id = request.form["telegram_id"]
     new_status = request.form["status"]
     accepted_city = request.form.get("accepted_city")
     accepted_date = request.form.get("accepted_date")
@@ -164,12 +181,12 @@ def update_status():
             UPDATE applicants
             SET status = %s, accepted_city = %s, accepted_date = %s
             WHERE telegram_id = %s
-        """, (new_status, accepted_city, accepted_date, telegram_id))
+        """, (new_status, accepted_city, accepted_date, applicant_id))
     else:
-        cur.execute("UPDATE applicants SET status = %s WHERE telegram_id = %s", (new_status, telegram_id))
+        cur.execute("UPDATE applicants SET status = %s WHERE telegram_id = %s", (new_status, applicant_id))
 
     if new_status in ("Accepted", "Declined"):
-        cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
+        cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
         topic = cur.fetchone()
         if topic:
             bot = telegram.Bot(token=BOT_TOKEN)
@@ -177,7 +194,7 @@ def update_status():
                 bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
             except:
                 pass
-            cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
+            cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
 
     conn.commit()
     cur.close()
@@ -188,14 +205,16 @@ def update_status():
 @app.route("/delete", methods=["POST"])
 def delete_user():
     token = request.args.get("token")
-    if not token or not validate_token(token):
+    telegram_id = validate_token(token)
+    
+    if not telegram_id or telegram_id != ADMIN_ID:
         return abort(403)
 
-    telegram_id = request.form["telegram_id"]
+    applicant_id = request.form["telegram_id"]
 
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
-    cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
+    cur.execute("SELECT thread_id FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
     topic = cur.fetchone()
 
     if topic:
@@ -204,30 +223,14 @@ def delete_user():
             bot.delete_forum_topic(chat_id=GROUP_ID, message_thread_id=topic[0])
         except:
             pass
-        cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (telegram_id,))
+        cur.execute("DELETE FROM topic_mappings WHERE telegram_id = %s", (applicant_id,))
 
-    cur.execute("DELETE FROM applicants WHERE telegram_id = %s", (telegram_id,))
+    cur.execute("DELETE FROM applicants WHERE telegram_id = %s", (applicant_id,))
     conn.commit()
     cur.close()
     conn.close()
 
     return redirect(f"/admin?token={token}")
-
-@app.route("/generate-token")
-def generate_token():
-    token = uuid.uuid4().hex[:8]
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    cur.execute("INSERT INTO admin_tokens(token) VALUES (%s)", (token,))
-    conn.commit()
-    cur.close()
-    conn.close()
-    domain = os.getenv("APP_DOMAIN")
-    status = request.args.get("status")
-    path = f"/admin?token={token}"
-    if status:
-        path += f"&status={status}"
-    return f"🔐 Скопіюй це посилання: {domain}{path} (дійсне {TOKEN_TTL_MINUTES} хвилин)"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
